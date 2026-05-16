@@ -3,6 +3,7 @@
 with Ada.Text_IO;
 with Ada.Calendar;
 with Ada.Directories;
+with Ada.Streams.Stream_IO;
 with Ada.Command_Line;
 with Ada.Environment_Variables;
 with Ada.Strings.Unbounded;
@@ -18,7 +19,6 @@ package body No_Build is
    --  without pulling every name from GNAT.OS_Lib into scope.
    use type GNAT.OS_Lib.String_Access;
    use type GNAT.OS_Lib.Process_Id;
-   use type GNAT.OS_Lib.File_Descriptor;
 
    --------------------------------------------------------------------------
    --  Internal bridge: convert our types to GNAT.OS_Lib types.
@@ -544,14 +544,20 @@ package body No_Build is
    end Make_Dirs;
 
    procedure Rename_Path (Old_Path, New_Path : String) is
-      Success : Boolean;
    begin
       Log ("RENAME", Old_Path & " -> " & New_Path);
-      GNAT.OS_Lib.Rename_File (Old_Path, New_Path, Success);
-      if not Success then
+      if Is_Dir (Old_Path) then
+         Copy_Dir (Old_Path, New_Path);
+         Ada.Directories.Delete_Tree (Old_Path);
+      else
+         Ada.Directories.Copy_File (Old_Path, New_Path);
+         Ada.Directories.Delete_File (Old_Path);
+      end if;
+   exception
+      when Build_Error => raise;
+      when others =>
          Log ("ERRO", "could not rename " & Old_Path & " to " & New_Path);
          raise Build_Error with "rename failed: " & Old_Path;
-      end if;
    end Rename_Path;
 
    procedure Remove_Path (Path : String) is
@@ -648,12 +654,7 @@ package body No_Build is
                   case Ada_Kind is
                      when Ada.Directories.Ordinary_File => Kind := Regular_File;
                      when Ada.Directories.Directory     => Kind := Directory;
-                     when Ada.Directories.Special_File  =>
-                        if GNAT.OS_Lib.Is_Symbolic_Link (Full) then
-                           Kind := Symlink;
-                        else
-                           Kind := Other;
-                        end if;
+                     when Ada.Directories.Special_File  => Kind := Other;
                   end case;
 
                   declare
@@ -743,34 +744,37 @@ package body No_Build is
    --------------------------------------------------------------------------
 
    function Read_File (Path : String) return String is
-      FD     : constant GNAT.OS_Lib.File_Descriptor :=
-        GNAT.OS_Lib.Open_Read (Path, GNAT.OS_Lib.Binary);
-      Len    : constant Integer :=
-        Integer (GNAT.OS_Lib.File_Length (FD));
-      Buffer : String (1 .. Len);
-      N_Read : Integer;
+      package SIO renames Ada.Streams.Stream_IO;
+      File   : SIO.File_Type;
+      Size   : constant Natural := Natural (Ada.Directories.Size (Path));
+      Result : String (1 .. Size);
    begin
-      if FD = GNAT.OS_Lib.Invalid_FD then
-         raise Build_Error with "cannot open file: " & Path;
+      if Size = 0 then
+         return "";
       end if;
-      N_Read := GNAT.OS_Lib.Read (FD, Buffer'Address, Len);
-      GNAT.OS_Lib.Close (FD);
-      return Buffer (1 .. N_Read);
+      SIO.Open (File, SIO.In_File, Path);
+      String'Read (SIO.Stream (File), Result);
+      SIO.Close (File);
+      return Result;
+   exception
+      when Build_Error => raise;
+      when others =>
+         if SIO.Is_Open (File) then SIO.Close (File); end if;
+         raise Build_Error with "cannot read file: " & Path;
    end Read_File;
 
    procedure Write_File (Path : String; Contents : String) is
-      FD        : constant GNAT.OS_Lib.File_Descriptor :=
-        GNAT.OS_Lib.Create_File (Path, GNAT.OS_Lib.Binary);
-      N_Written : Integer;
+      package SIO renames Ada.Streams.Stream_IO;
+      File : SIO.File_Type;
    begin
-      if FD = GNAT.OS_Lib.Invalid_FD then
-         raise Build_Error with "cannot create file: " & Path;
-      end if;
-      N_Written := GNAT.OS_Lib.Write (FD, Contents'Address, Contents'Length);
-      GNAT.OS_Lib.Close (FD);
-      if N_Written /= Contents'Length then
-         raise Build_Error with "incomplete write to: " & Path;
-      end if;
+      SIO.Create (File, SIO.Out_File, Path);
+      String'Write (SIO.Stream (File), Contents);
+      SIO.Close (File);
+   exception
+      when Build_Error => raise;
+      when others =>
+         if SIO.Is_Open (File) then SIO.Close (File); end if;
+         raise Build_Error with "cannot write file: " & Path;
    end Write_File;
 
    function Get_Current_Dir return String is
