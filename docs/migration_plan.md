@@ -123,7 +123,7 @@ in the `File_Kind` enumeration for API compatibility but is documented as never
 returned by this implementation.  Any user who needs symlink discrimination on
 a specific platform can wrap the Walk callback with a platform-specific check.
 
-### 6. Process management — dlopen/dlsym bootstrap
+### 6. Process management — user-injectable dlopen/dlsym binding
 
 This is the hardest part.  `fork`+`execv`+`waitpid` do not exist on Windows.
 `CreateProcessA`+`WaitForSingleObject` do not exist on POSIX.  A single Ada
@@ -133,6 +133,33 @@ without a C preprocessor or separate platform bodies.
 **Solution**: import only `dlopen` and `dlsym` via `pragma Import`; load every
 other OS function through them at runtime as function-pointer-typed
 `System.Address` values converted with `Ada.Unchecked_Conversion`.
+
+The dlopen/dlsym pair is itself exposed as a user-overridable binding:
+
+```ada
+type DL_Open_Func is access function
+  (Path : System.Address; Mode : Integer) return DL_Handle;
+pragma Convention (C, DL_Open_Func);
+
+type DL_Sym_Func is access function
+  (Handle : DL_Handle; Symbol : System.Address) return System.Address;
+pragma Convention (C, DL_Sym_Func);
+
+type DL_Binding is record
+   DL_Open : DL_Open_Func;
+   DL_Sym  : DL_Sym_Func;
+end record;
+
+procedure Set_DL_Binding (Binding : DL_Binding);
+--  Override before the first Cmd/Cmd_Async call.
+--  The default binding uses pragma Import (C, ...) resolving against
+--  libdl (Linux/macOS) or MinGW's libdl wrapper (Windows/GNAT).
+```
+
+This lets ObjectAda and Janus users on Windows supply a binding built on top
+of `LoadLibraryA`/`GetProcAddress` from kernel32.dll, without modifying
+No_Build's source.  A ready-made Windows binding (≤ 30 lines of Ada) will be
+provided in `docs/windows_dl_binding.md` and called out in the README.
 
 `dlopen` and `dlsym` are available on all three target platforms under GNAT:
 - **Linux**: `libdl` (glibc 2.34+: part of libc itself; older: `-ldl`)

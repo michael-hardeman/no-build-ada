@@ -5,43 +5,49 @@
 --  -----
 --  1. Place no_build.ads and no_build.adb next to your build script.
 --  2. Write a build.adb that withs No_Build and contains a main procedure.
---  3. Bootstrap once:  gnatmake build.adb -o build && ./build
+--  3. Bootstrap once with your Ada compiler of choice.
 --  4. From then on just run ./build -- it will recompile itself if build.adb
 --     has been modified (Go_Rebuild_Urself technology).
 
-with GNAT.OS_Lib;
+private with GNAT.OS_Lib;
+--  Used only in the private section as a transitional measure; removed in
+--  Phase 3 when process management is re-implemented via dlopen/dlsym.
 
 package No_Build is
 
+   pragma Elaborate_Body;
+   --  Ensures the body is elaborated before any client, so the Detect_Platform
+   --  call that initialises Platform is safe at elaboration time.
+
    Build_Error : exception;
+   --  Raised when any build step fails (non-zero exit code or OS error).
 
    --------------------------------------------------------------------------
    --  Platform
    --------------------------------------------------------------------------
 
-   type Platform_Kind is (Linux, Windows);
+   type Platform_Kind is (Linux, MacOS, Windows);
 
-   function Detect_Platform return Platform_Kind is
-     (if GNAT.OS_Lib.Directory_Separator = '/' then Linux else Windows);
-   --  Detect the current platform; evaluated at elaboration time.
+   function Detect_Platform return Platform_Kind;
+   --  Detect the current platform by probing well-known environment variables
+   --  and filesystem paths.  Called once at elaboration to set Platform.
 
    Platform : constant Platform_Kind := Detect_Platform;
-   --  Package-wide constant; use this instead of runtime OS checks.
-   --  Raised when any build step fails (non-zero exit code or OS error).
+   --  Package-wide constant; use this instead of per-call OS checks.
 
    --------------------------------------------------------------------------
    --  Argument-list helpers
    --
-   --  GNAT.OS_Lib.Argument_List is array (Positive range <>) of String_Access.
-   --  Use S("text") to heap-allocate individual strings, then build lists
-   --  with Ada array aggregates and the built-in & concatenation, e.g.:
+   --  String_Access is a heap-allocated string.  Argument_List is an array
+   --  of String_Access values.  Use S("text") to allocate individual strings,
+   --  then build lists with Ada array aggregates and & concatenation, e.g.:
    --
    --    Cmd ("gnatmake", (S ("main.adb"), S ("-O2")));
    --    Cmd ("gnatmake", S ("main.adb") & Extra_Flags);
    --------------------------------------------------------------------------
 
-   subtype Argument_List is GNAT.OS_Lib.Argument_List;
-   subtype String_Access is GNAT.OS_Lib.String_Access;
+   type String_Access is access String;
+   type Argument_List is array (Positive range <>) of String_Access;
 
    function S (Str : String) return String_Access;
    --  Heap-allocate Str; convenience for building Argument_List literals.
@@ -59,7 +65,7 @@ package No_Build is
    --  Run Program with no arguments.
 
    procedure Sh (Command : String);
-   --  Run Command via /bin/sh -c "Command".
+   --  Run Command via the platform shell (/bin/sh on POSIX, cmd.exe on Windows).
 
    --------------------------------------------------------------------------
    --  I/O redirection
@@ -93,14 +99,14 @@ package No_Build is
    type Proc_List is private;
    --  Growable list of Proc handles for batch waiting.
 
-   function  Cmd_Async
+   function Cmd_Async
      (Program : String;
       Args    : Argument_List;
       Redir   : Redirect := No_Redirect) return Proc;
    --  Spawn Program without waiting.  Returns a Proc handle.
    --  Raises Build_Error if the program is not found.
 
-   function  Cmd_Async (Program : String) return Proc;
+   function Cmd_Async (Program : String) return Proc;
    --  Spawn Program with no arguments.
 
    procedure Wait (P : Proc);
@@ -118,7 +124,7 @@ package No_Build is
    --  parallel jobs: spawn at most N_Procs commands before Wait_All.
 
    --------------------------------------------------------------------------
-   --  Ada-specific: compile with gnatmake
+   --  Ada-specific: compile
    --------------------------------------------------------------------------
 
    procedure Compile
@@ -142,18 +148,16 @@ package No_Build is
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null));
    --  Compile every .adb in Src_Dir with -c -fPIC, then link the objects
-   --  into a shared library at Output (e.g. "lib/libfoo.so") using gcc -shared.
+   --  into a shared library at Output using gcc -shared (Linux) or
+   --  gcc -dynamiclib (macOS).
 
    procedure Gnatmake
      (Source  : String;
       Output  : String        := "";
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null));
-   --  Compile the Ada main source file Source using gnatmake.
-   --  If Output  is non-empty, passes "-o Output".
-   --  If Obj_Dir is non-empty, passes "-D Obj_Dir" (all .o/.ali files go
-   --  there) and creates the directory if it does not already exist.
-   --  Extra args are appended to the gnatmake invocation.
+   --  Compile and link Source using gnatmake.
+   --  Renamed to Compile_Program in Phase 4.
 
    --------------------------------------------------------------------------
    --  Path utilities
@@ -228,7 +232,6 @@ package No_Build is
    function Needs_Rebuild (Output : String; Inputs : Argument_List)
      return Boolean;
    --  Return True when Output is missing or is older than any file in Inputs.
-   --  Equivalent to calling Is_Newer (Input, Output) for each input.
 
    --------------------------------------------------------------------------
    --  Directory iteration
@@ -247,6 +250,9 @@ package No_Build is
    --  Walk_Stop     -- abort the entire walk immediately
 
    type File_Kind is (Regular_File, Directory, Symlink, Other);
+   --  Note: Symlink is retained for API compatibility but is never returned
+   --  by this implementation.  All special files appear as Other.
+   --  Symlink detection is deferred to Phase 2.
 
    type Walk_Entry is record
       Path  : String_Access;  --  full path relative to the walk root
@@ -285,9 +291,8 @@ package No_Build is
    --
    --  Call this as the very first statement in your build procedure.
    --  If Source_Path is newer than Binary_Path the build script is
-   --  recompiled with gnatmake and then re-executed (via execv), passing
-   --  through the original command-line arguments.  Only needs bootstrapping
-   --  once; after that ./build is self-maintaining.
+   --  recompiled with gnatmake and then re-executed, passing through the
+   --  original command-line arguments.
    --------------------------------------------------------------------------
 
    procedure Go_Rebuild_Urself
@@ -295,8 +300,6 @@ package No_Build is
       Source_Path : String;
       Obj_Dir     : String        := "";
       Extra       : Argument_List := (1 .. 0 => null));
-   --  Extra args (e.g. "-Ilinux/") are forwarded to the internal gnatmake
-   --  call that recompiles the build script.
 
 private
 
