@@ -9,9 +9,7 @@
 --  4. From then on just run ./build -- it will recompile itself if build.adb
 --     has been modified (Go_Rebuild_Urself technology).
 
-private with GNAT.OS_Lib;
---  Used only in the private section as a transitional measure; removed in
---  Phase 3 when process management is re-implemented via dlopen/dlsym.
+with System;
 
 package No_Build is
 
@@ -270,6 +268,34 @@ package No_Build is
    --  Returning Walk_Stop aborts the entire walk immediately.
 
    --------------------------------------------------------------------------
+   --  Dynamic loading (user-injectable binding)
+   --
+   --  The default binding uses pragma Import (C, ...) resolving dlopen/dlsym
+   --  against libdl (Linux), libSystem (macOS), or MinGW's libdl (Windows).
+   --  ObjectAda / Janus users on Windows can call Set_DL_Binding before any
+   --  Cmd / Cmd_Async call to supply LoadLibraryA / GetProcAddress instead.
+   --------------------------------------------------------------------------
+
+   type DL_Handle is new System.Address;
+
+   type DL_Open_Func is access function
+     (Path : System.Address; Mode : Integer) return DL_Handle;
+   pragma Convention (C, DL_Open_Func);
+
+   type DL_Sym_Func is access function
+     (Handle : DL_Handle; Symbol : System.Address) return System.Address;
+   pragma Convention (C, DL_Sym_Func);
+
+   type DL_Binding is record
+      DL_Open : DL_Open_Func;
+      DL_Sym  : DL_Sym_Func;
+   end record;
+
+   procedure Set_DL_Binding (Binding : DL_Binding);
+   --  Override the default dlopen/dlsym binding.  Must be called before the
+   --  first Cmd, Cmd_Async, or Go_Rebuild_Urself call.
+
+   --------------------------------------------------------------------------
    --  Logging
    --------------------------------------------------------------------------
 
@@ -304,10 +330,10 @@ package No_Build is
 private
 
    type Proc is record
-      Pid : GNAT.OS_Lib.Process_Id := GNAT.OS_Lib.Invalid_Pid;
+      Pid : System.Address := System.Null_Address;
    end record;
 
-   Invalid_Proc : constant Proc := (Pid => GNAT.OS_Lib.Invalid_Pid);
+   Invalid_Proc : constant Proc := (Pid => System.Null_Address);
 
    type Proc_Array is array (1 .. Max_Procs) of Proc;
 

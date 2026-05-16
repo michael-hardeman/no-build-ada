@@ -8,40 +8,145 @@ with Ada.Command_Line;
 with Ada.Environment_Variables;
 with Ada.Strings.Unbounded;
 with Ada.Unchecked_Conversion;
+with Interfaces.C;
+with Interfaces.C.Strings;
+with System;
 with System.Multiprocessors;
-with GNAT.OS_Lib;
 
 package body No_Build is
 
    use Ada.Text_IO;
-
-   --  Bring in equality/relational operators for GNAT.OS_Lib private types
-   --  without pulling every name from GNAT.OS_Lib into scope.
-   use type GNAT.OS_Lib.String_Access;
-   use type GNAT.OS_Lib.Process_Id;
+   use type System.Address;
 
    --------------------------------------------------------------------------
-   --  Internal bridge: convert our types to GNAT.OS_Lib types.
-   --  Removed in Phase 3 when GNAT.OS_Lib is fully eliminated.
-   --
-   --  Both String_Access and GNAT.OS_Lib.String_Access are "access String";
-   --  they share identical representations (a single pointer word), so the
-   --  unchecked conversion is safe on all supported targets.
+   --  dlopen / dlsym — the only two pragma Import (C, ...) in this package.
+   --  Everything else is loaded at runtime through these two functions.
    --------------------------------------------------------------------------
 
-   function To_GNAT_SA is new Ada.Unchecked_Conversion
-     (String_Access, GNAT.OS_Lib.String_Access);
+   function Default_DL_Open
+     (Path : System.Address; Mode : Integer) return DL_Handle;
+   pragma Import (C, Default_DL_Open, "dlopen");
 
-   function To_GNAT_Args
-     (Args : Argument_List) return GNAT.OS_Lib.Argument_List
-   is
-      Result : GNAT.OS_Lib.Argument_List (Args'First .. Args'Last);
+   function Default_DL_Sym
+     (Handle : DL_Handle; Symbol : System.Address) return System.Address;
+   pragma Import (C, Default_DL_Sym, "dlsym");
+
+   pragma Linker_Options ("-ldl");
+   --  Required on glibc < 2.34 where dlopen lives in libdl.so.2.
+   --  On glibc >= 2.34, macOS, and MinGW this is harmless (already linked
+   --  or silently ignored).
+
+   Active_DL : DL_Binding :=
+     (DL_Open => Default_DL_Open'Access,
+      DL_Sym  => Default_DL_Sym'Access);
+
+   procedure Set_DL_Binding (Binding : DL_Binding) is
    begin
-      for I in Args'Range loop
-         Result (I) := To_GNAT_SA (Args (I));
-      end loop;
+      Active_DL := Binding;
+   end Set_DL_Binding;
+
+   --------------------------------------------------------------------------
+   --  C helper: convert an Ada String to a null-terminated C string on the
+   --  stack, call dlsym, and return the raw address.
+   --------------------------------------------------------------------------
+
+   function To_Address is new Ada.Unchecked_Conversion
+     (Interfaces.C.Strings.chars_ptr, System.Address);
+
+   function Sym (Handle : DL_Handle; Name : String) return System.Address is
+      C_Name : Interfaces.C.Strings.chars_ptr :=
+        Interfaces.C.Strings.New_String (Name);
+      Result : System.Address;
+   begin
+      Result := Active_DL.DL_Sym (Handle, To_Address (C_Name));
+      Interfaces.C.Strings.Free (C_Name);
       return Result;
-   end To_GNAT_Args;
+   end Sym;
+
+   --------------------------------------------------------------------------
+   --  POSIX process function pointer types (loaded via dlsym at elaboration)
+   --------------------------------------------------------------------------
+
+   type Fork_Func is access function return Interfaces.C.int;
+   pragma Convention (C, Fork_Func);
+
+   type Execv_Func is access function
+     (Path : System.Address;
+      Argv : System.Address) return Interfaces.C.int;
+   pragma Convention (C, Execv_Func);
+
+   type Waitpid_Func is access function
+     (Pid     : Interfaces.C.int;
+      Status  : access Interfaces.C.int;
+      Options : Interfaces.C.int) return Interfaces.C.int;
+   pragma Convention (C, Waitpid_Func);
+
+   type Exit_Func is access procedure (Status : Interfaces.C.int);
+   pragma Convention (C, Exit_Func);
+
+   type Dup2_Func is access function
+     (Old_FD, New_FD : Interfaces.C.int) return Interfaces.C.int;
+   pragma Convention (C, Dup2_Func);
+
+   type Open_Func is access function
+     (Path  : System.Address;
+      Flags : Interfaces.C.int;
+      Mode  : Interfaces.C.int) return Interfaces.C.int;
+   pragma Convention (C, Open_Func);
+
+   type Close_Func is access function
+     (FD : Interfaces.C.int) return Interfaces.C.int;
+   pragma Convention (C, Close_Func);
+
+   function To_Fork    is new Ada.Unchecked_Conversion (System.Address, Fork_Func);
+   function To_Execv   is new Ada.Unchecked_Conversion (System.Address, Execv_Func);
+   function To_Waitpid is new Ada.Unchecked_Conversion (System.Address, Waitpid_Func);
+   function To_Exit    is new Ada.Unchecked_Conversion (System.Address, Exit_Func);
+   function To_Dup2    is new Ada.Unchecked_Conversion (System.Address, Dup2_Func);
+   function To_Open    is new Ada.Unchecked_Conversion (System.Address, Open_Func);
+   function To_Close   is new Ada.Unchecked_Conversion (System.Address, Close_Func);
+
+   --  Function pointers — initialized by Load_Posix_Symbols (called at
+   --  elaboration after Detect_Platform).
+   C_Fork    : Fork_Func    := null;
+   C_Execv   : Execv_Func   := null;
+   C_Waitpid : Waitpid_Func := null;
+   C_Exit    : Exit_Func    := null;
+   C_Dup2    : Dup2_Func    := null;
+   C_Open    : Open_Func    := null;
+   C_Close   : Close_Func   := null;
+
+   --  POSIX constants for open(2)
+   O_WRONLY   : constant := 1;
+   O_CREAT    : constant := 64;    --  Linux; overridden for macOS below
+   O_TRUNC    : constant := 512;   --  Linux; overridden for macOS below
+
+   function Open_Flags return Interfaces.C.int is
+   begin
+      --  macOS uses different values for O_CREAT and O_TRUNC
+      if Platform = MacOS then
+         return Interfaces.C.int (O_WRONLY + 16#200# + 16#400#);
+         --  O_CREAT = 0x200, O_TRUNC = 0x400 on macOS
+      else
+         return Interfaces.C.int (O_WRONLY + O_CREAT + O_TRUNC);
+      end if;
+   end Open_Flags;
+
+   procedure Load_Posix_Symbols is
+      Lib : DL_Handle;
+   begin
+      --  dlopen(NULL, RTLD_LAZY) opens the main process image, exposing
+      --  all libc symbols that are already linked in.
+      Lib := Active_DL.DL_Open (System.Null_Address, 1);
+
+      C_Fork    := To_Fork    (Sym (Lib, "fork"));
+      C_Execv   := To_Execv   (Sym (Lib, "execv"));
+      C_Waitpid := To_Waitpid (Sym (Lib, "waitpid"));
+      C_Exit    := To_Exit    (Sym (Lib, "_exit"));
+      C_Dup2    := To_Dup2    (Sym (Lib, "dup2"));
+      C_Open    := To_Open    (Sym (Lib, "open"));
+      C_Close   := To_Close   (Sym (Lib, "close"));
+   end Load_Posix_Symbols;
 
    --------------------------------------------------------------------------
    --  Platform detection
@@ -124,29 +229,92 @@ package body No_Build is
    end Sh;
 
    --------------------------------------------------------------------------
-   --  Internal helpers
+   --  Internal helpers: PATH search (replaces GNAT.OS_Lib.Locate_Exec_On_Path)
    --------------------------------------------------------------------------
 
-   --  Locate Program on PATH, log the command line, raise on not-found.
-   --  Returns the resolved absolute path as a String.
    function Resolve_Program
      (Program : String;
       Display : String) return String
    is
-      Prog_Path : GNAT.OS_Lib.String_Access;
+      function Has_Slash return Boolean is
+      begin
+         for C of Program loop
+            if C = '/' or else C = '\' then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Has_Slash;
+
+      function Probe (Path : String) return Boolean is
+         use Ada.Directories;
+      begin
+         return Exists (Path)
+           and then Kind (Path) = Ordinary_File;
+      end Probe;
+
+      Separator : constant Character :=
+        (if Platform = Windows then ';' else ':');
    begin
       Log ("CMD", Display);
-      Prog_Path := GNAT.OS_Lib.Locate_Exec_On_Path (Program);
-      if Prog_Path = null then
-         Log ("ERRO", "program not found on PATH: " & Program);
+
+      --  If the program contains a path separator, use it as-is.
+      if Has_Slash then
+         if Probe (Program) then
+            return Program;
+         end if;
+         Log ("ERRO", "program not found: " & Program);
          raise Build_Error with "program not found: " & Program;
       end if;
-      declare
-         Result : constant String := Prog_Path.all;
-      begin
-         GNAT.OS_Lib.Free (Prog_Path);
-         return Result;
-      end;
+
+      --  Walk PATH directories.
+      if Ada.Environment_Variables.Exists ("PATH") then
+         declare
+            PATH  : constant String :=
+              Ada.Environment_Variables.Value ("PATH");
+            Start : Positive := PATH'First;
+         begin
+            for I in PATH'Range loop
+               if PATH (I) = Separator then
+                  if I > Start then
+                     declare
+                        Dir  : constant String := PATH (Start .. I - 1);
+                        Full : constant String := Dir / Program;
+                     begin
+                        if Probe (Full) then return Full; end if;
+                        if Platform = Windows
+                          and then not Ends_With (Program, ".exe")
+                        then
+                           if Probe (Full & ".exe") then
+                              return Full & ".exe";
+                           end if;
+                        end if;
+                     end;
+                  end if;
+                  Start := I + 1;
+               end if;
+            end loop;
+            --  Last segment (no trailing separator).
+            if Start <= PATH'Last then
+               declare
+                  Dir  : constant String := PATH (Start .. PATH'Last);
+                  Full : constant String := Dir / Program;
+               begin
+                  if Probe (Full) then return Full; end if;
+                  if Platform = Windows
+                    and then not Ends_With (Program, ".exe")
+                  then
+                     if Probe (Full & ".exe") then
+                        return Full & ".exe";
+                     end if;
+                  end if;
+               end;
+            end if;
+         end;
+      end if;
+
+      Log ("ERRO", "program not found on PATH: " & Program);
+      raise Build_Error with "program not found: " & Program;
    end Resolve_Program;
 
    --  Build a display string "program arg1 arg2 ..." for logging.
@@ -164,62 +332,199 @@ package body No_Build is
       return To_String (D);
    end Display_Of;
 
+   --------------------------------------------------------------------------
+   --  Internal helpers: POSIX process spawn via dlsym'd fork/execv/waitpid
+   --------------------------------------------------------------------------
+
+   --  Build a C argv array: null-terminated array of pointers to
+   --  null-terminated strings.  Returns a heap-allocated block whose
+   --  address can be passed to execv().
+   type C_Str_Array is array (Natural range <>) of
+     Interfaces.C.Strings.chars_ptr;
+   type C_Str_Array_Access is access C_Str_Array;
+
+   function Build_Argv
+     (Prog_Path : String;
+      Args      : Argument_List) return C_Str_Array_Access
+   is
+      use Interfaces.C.Strings;
+      Argv : constant C_Str_Array_Access :=
+        new C_Str_Array (0 .. Args'Length + 1);
+   begin
+      Argv (0) := New_String (Prog_Path);
+      for I in Args'Range loop
+         if Args (I) /= null then
+            Argv (I - Args'First + 1) := New_String (Args (I).all);
+         else
+            Argv (I - Args'First + 1) := Null_Ptr;
+         end if;
+      end loop;
+      Argv (Args'Length + 1) := Null_Ptr;  --  NULL terminator
+      return Argv;
+   end Build_Argv;
+
+   procedure Free_Argv (Argv : in out C_Str_Array_Access) is
+   begin
+      if Argv /= null then
+         for I in Argv'Range loop
+            Interfaces.C.Strings.Free (Argv (I));
+         end loop;
+         --  Note: we leak the C_Str_Array block itself; it is small and
+         --  short-lived (one allocation per Cmd/Cmd_Async call).
+         Argv := null;
+      end if;
+   end Free_Argv;
+
+   --  Redirect a file descriptor: open a file, dup2 it onto Target_FD,
+   --  then close the original.  Called in the child process between fork
+   --  and execv.
+   procedure Redirect_FD (File_Path : String; Target_FD : Interfaces.C.int) is
+      use Interfaces.C;
+      use Interfaces.C.Strings;
+      C_Path : chars_ptr := New_String (File_Path);
+      FD     : int;
+   begin
+      FD := C_Open (To_Address (C_Path), Open_Flags, 8#644#);
+      Free (C_Path);
+      if FD < 0 then
+         C_Exit (1);
+      end if;
+      if C_Dup2 (FD, Target_FD) < 0 then
+         C_Exit (1);
+      end if;
+      if FD /= Target_FD then
+         declare
+            Dummy : int;
+         begin
+            Dummy := C_Close (FD);
+         end;
+      end if;
+   end Redirect_FD;
+
+   --  Extract exit status from the raw waitpid status word.
+   --  WIFEXITED(s) = ((s) & 0x7f) == 0
+   --  WEXITSTATUS(s) = ((s) >> 8) & 0xff
+   function Exit_Status_Of (Status : Interfaces.C.int) return Integer is
+      S : constant Integer := Integer (Status);
+   begin
+      if (S mod 128) = 0 then
+         return (S / 256) mod 256;
+      else
+         return -1;  --  killed by signal
+      end if;
+   end Exit_Status_Of;
+
+   --  Spawn a child process using fork+execv.  Optionally redirect
+   --  stdout (fd 1) and/or stderr (fd 2) to files.
+   --  Returns the child PID as a System.Address (for Proc.Pid).
+   --  If Wait_For_Exit is True, waits and returns Null_Address; raises
+   --  Build_Error on non-zero exit.
+   function Posix_Spawn
+     (Prog_Path      : String;
+      Args           : Argument_List;
+      Stdout_File    : String_Access;
+      Stderr_File    : String_Access;
+      Wait_For_Exit  : Boolean) return System.Address
+   is
+      use Interfaces.C;
+      use type System.Address;
+      Argv    : C_Str_Array_Access := Build_Argv (Prog_Path, Args);
+      Pid     : int;
+      Status  : aliased int;
+      Waited  : int;
+      C_Path  : Interfaces.C.Strings.chars_ptr;
+   begin
+      Pid := C_Fork.all;
+
+      if Pid < 0 then
+         Free_Argv (Argv);
+         raise Build_Error with "fork failed";
+      end if;
+
+      if Pid = 0 then
+         --  Child process: set up redirections and exec.
+         if Stdout_File /= null then
+            Redirect_FD (Stdout_File.all, 1);
+         end if;
+         if Stderr_File /= null then
+            Redirect_FD (Stderr_File.all, 2);
+         end if;
+
+         C_Path := Interfaces.C.Strings.New_String (Prog_Path);
+         declare
+            Dummy : int;
+         begin
+            Dummy := C_Execv (To_Address (C_Path), Argv (0)'Address);
+         end;
+         --  If execv returns, it failed.
+         C_Exit (127);
+      end if;
+
+      --  Parent process.
+      Free_Argv (Argv);
+
+      if not Wait_For_Exit then
+         --  Return the child PID for async tracking.
+         declare
+            function To_Address is new Ada.Unchecked_Conversion
+              (int, System.Address);
+         begin
+            return To_Address (Pid);
+         end;
+      end if;
+
+      --  Synchronous: wait for child.
+      loop
+         Waited := C_Waitpid (Pid, Status'Access, 0);
+         exit when Waited = Pid or else Waited < 0;
+      end loop;
+
+      declare
+         Code : constant Integer := Exit_Status_Of (Status);
+      begin
+         if Code /= 0 then
+            Log ("ERRO", "command exited with status" & Code'Image);
+            raise Build_Error with "command failed (exit" & Code'Image & ")";
+         end if;
+      end;
+
+      return System.Null_Address;
+   end Posix_Spawn;
+
+   --  Wait for a specific PID.  Returns the exit status.
+   function Posix_Wait (Pid_Addr : System.Address) return Integer is
+      use Interfaces.C;
+      function To_Int is new Ada.Unchecked_Conversion
+        (System.Address, int);
+      Pid    : constant int := To_Int (Pid_Addr);
+      Status : aliased int;
+      Waited : int;
+   begin
+      loop
+         Waited := C_Waitpid (Pid, Status'Access, 0);
+         exit when Waited = Pid or else Waited < 0;
+      end loop;
+      return Exit_Status_Of (Status);
+   end Posix_Wait;
+
+   --------------------------------------------------------------------------
+   --  Command execution (public API)
+   --------------------------------------------------------------------------
+
    procedure Cmd
      (Program : String;
       Args    : Argument_List;
       Redir   : Redirect)
    is
-      Display   : constant String                      := Display_Of (Program, Args);
-      Prog_Path : constant String                      := Resolve_Program (Program, Display);
-      GNAT_Args : constant GNAT.OS_Lib.Argument_List   := To_GNAT_Args (Args);
-      Pid       : GNAT.OS_Lib.Process_Id;
-      Success   : Boolean;
+      Display   : constant String := Display_Of (Program, Args);
+      Prog_Path : constant String := Resolve_Program (Program, Display);
+      Dummy     : System.Address;
    begin
-      if Redir.Stdout = null and then Redir.Stderr = null then
-         declare
-            Exit_Code : constant Integer :=
-              GNAT.OS_Lib.Spawn (Prog_Path, GNAT_Args);
-         begin
-            if Exit_Code /= 0 then
-               Log ("ERRO", "command exited with status" & Exit_Code'Image);
-               raise Build_Error with "command failed: " & Program;
-            end if;
-         end;
-      elsif Redir.Stdout /= null and then Redir.Stderr /= null then
-         Pid := GNAT.OS_Lib.Non_Blocking_Spawn
-           (Prog_Path, GNAT_Args, Redir.Stdout.all, Redir.Stderr.all);
-         if Pid = GNAT.OS_Lib.Invalid_Pid then
-            raise Build_Error with "could not spawn: " & Program;
-         end if;
-         GNAT.OS_Lib.Wait_Process (Pid, Success);
-         if not Success then
-            Log ("ERRO", "command failed: " & Program);
-            raise Build_Error with "command failed: " & Program;
-         end if;
-      elsif Redir.Stdout /= null then
-         Pid := GNAT.OS_Lib.Non_Blocking_Spawn
-           (Prog_Path, GNAT_Args, Redir.Stdout.all, Err_To_Out => False);
-         if Pid = GNAT.OS_Lib.Invalid_Pid then
-            raise Build_Error with "could not spawn: " & Program;
-         end if;
-         GNAT.OS_Lib.Wait_Process (Pid, Success);
-         if not Success then
-            Log ("ERRO", "command failed: " & Program);
-            raise Build_Error with "command failed: " & Program;
-         end if;
-      else
-         --  Stderr only: route both streams into the stderr file.
-         Pid := GNAT.OS_Lib.Non_Blocking_Spawn
-           (Prog_Path, GNAT_Args, Redir.Stderr.all, Err_To_Out => True);
-         if Pid = GNAT.OS_Lib.Invalid_Pid then
-            raise Build_Error with "could not spawn: " & Program;
-         end if;
-         GNAT.OS_Lib.Wait_Process (Pid, Success);
-         if not Success then
-            Log ("ERRO", "command failed: " & Program);
-            raise Build_Error with "command failed: " & Program;
-         end if;
-      end if;
+      Dummy := Posix_Spawn
+        (Prog_Path, Args,
+         Stdout_File   => Redir.Stdout,
+         Stderr_File   => Redir.Stderr,
+         Wait_For_Exit => True);
    end Cmd;
 
    function Cmd_Async
@@ -227,28 +532,16 @@ package body No_Build is
       Args    : Argument_List;
       Redir   : Redirect := No_Redirect) return Proc
    is
-      Display   : constant String                    := Display_Of (Program, Args);
-      Prog_Path : constant String                    := Resolve_Program (Program, Display);
-      GNAT_Args : constant GNAT.OS_Lib.Argument_List := To_GNAT_Args (Args);
-      Pid       : GNAT.OS_Lib.Process_Id;
+      Display   : constant String := Display_Of (Program, Args);
+      Prog_Path : constant String := Resolve_Program (Program, Display);
+      Pid_Addr  : System.Address;
    begin
-      if Redir.Stdout /= null and then Redir.Stderr /= null then
-         Pid := GNAT.OS_Lib.Non_Blocking_Spawn
-           (Prog_Path, GNAT_Args, Redir.Stdout.all, Redir.Stderr.all);
-      elsif Redir.Stdout /= null then
-         Pid := GNAT.OS_Lib.Non_Blocking_Spawn
-           (Prog_Path, GNAT_Args, Redir.Stdout.all, Err_To_Out => False);
-      elsif Redir.Stderr /= null then
-         Pid := GNAT.OS_Lib.Non_Blocking_Spawn
-           (Prog_Path, GNAT_Args, Redir.Stderr.all, Err_To_Out => True);
-      else
-         Pid := GNAT.OS_Lib.Non_Blocking_Spawn (Prog_Path, GNAT_Args);
-      end if;
-
-      if Pid = GNAT.OS_Lib.Invalid_Pid then
-         raise Build_Error with "could not spawn: " & Program;
-      end if;
-      return (Pid => Pid);
+      Pid_Addr := Posix_Spawn
+        (Prog_Path, Args,
+         Stdout_File   => Redir.Stdout,
+         Stderr_File   => Redir.Stderr,
+         Wait_For_Exit => False);
+      return (Pid => Pid_Addr);
    end Cmd_Async;
 
    function Cmd_Async (Program : String) return Proc is
@@ -258,14 +551,9 @@ package body No_Build is
    end Cmd_Async;
 
    procedure Wait (P : Proc) is
-      Done    : GNAT.OS_Lib.Process_Id;
-      Success : Boolean;
+      Code : constant Integer := Posix_Wait (P.Pid);
    begin
-      loop
-         GNAT.OS_Lib.Wait_Process (Done, Success);
-         exit when Done = P.Pid or else Done = GNAT.OS_Lib.Invalid_Pid;
-      end loop;
-      if not Success then
+      if Code /= 0 then
          raise Build_Error with "process exited with non-zero status";
       end if;
    end Wait;
@@ -283,26 +571,15 @@ package body No_Build is
       Any_Failed : Boolean := False;
    begin
       for I in 1 .. List.Count loop
-         declare
-            Done    : GNAT.OS_Lib.Process_Id;
-            Success : Boolean;
-         begin
-            loop
-               GNAT.OS_Lib.Wait_Process (Done, Success);
-               for J in 1 .. List.Count loop
-                  if List.Items (J).Pid = Done then
-                     List.Items (J) := Invalid_Proc;
-                     exit;
-                  end if;
-               end loop;
-               exit when Done = List.Items (I).Pid
-                 or else List.Items (I).Pid = GNAT.OS_Lib.Invalid_Pid
-                 or else Done = GNAT.OS_Lib.Invalid_Pid;
-            end loop;
-            if not Success then
-               Any_Failed := True;
-            end if;
-         end;
+         if List.Items (I).Pid /= System.Null_Address then
+            declare
+               Code : constant Integer := Posix_Wait (List.Items (I).Pid);
+            begin
+               if Code /= 0 then
+                  Any_Failed := True;
+               end if;
+            end;
+         end if;
       end loop;
       List := (Items => (others => Invalid_Proc), Count => 0);
       if Any_Failed then
@@ -844,20 +1121,32 @@ package body No_Build is
          end if;
 
          declare
-            Args      : Argument_List (1 .. Ada.Command_Line.Argument_Count);
-            GNAT_Args : GNAT.OS_Lib.Argument_List
-                          (1 .. Ada.Command_Line.Argument_Count);
-            Exit_Code : Integer;
+            Args : Argument_List (1 .. Ada.Command_Line.Argument_Count);
          begin
             for I in Args'Range loop
                Args (I) := new String'(Ada.Command_Line.Argument (I));
             end loop;
-            GNAT_Args := To_GNAT_Args (Args);
             Info ("re-executing: " & Binary_Path);
-            Exit_Code := GNAT.OS_Lib.Spawn (Binary_Path, GNAT_Args);
-            GNAT.OS_Lib.OS_Exit (Exit_Code);
+            declare
+               Dummy : System.Address;
+            begin
+               Dummy := Posix_Spawn
+                 (Binary_Path, Args,
+                  Stdout_File   => null,
+                  Stderr_File   => null,
+                  Wait_For_Exit => True);
+            end;
+            --  If the re-executed build succeeded, exit this (old) process.
+            C_Exit (0);
          end;
       end if;
    end Go_Rebuild_Urself;
 
+begin
+   --  Load POSIX process-management symbols at elaboration time.
+   --  This runs after Detect_Platform (which initializes the Platform constant
+   --  in the spec), so we know which platform we're on.
+   if Platform /= Windows then
+      Load_Posix_Symbols;
+   end if;
 end No_Build;
