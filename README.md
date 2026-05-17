@@ -4,6 +4,13 @@ An Ada port of [nob.h](https://github.com/tsoding/nob.h) — a build system
 that lives entirely in your source tree with no Makefiles, no `.gpr` project
 files, and no external tools beyond `gnatmake`.
 
+I have taken steps to try and make this compiler independent. I rely only on
+Ada Standard Library packages and implement platform specific stuff myself.
+I also tried to make a generic compiler interface using the Ada_Compiler
+type. I only ever use GNAT since it's free and open source but if you have
+access to other Ada compilers I'd appreciate it if you tested my code and
+gave me feedback/pull requests.
+
 ## Concept
 
 Write your build logic as a normal Ada program (`build.adb`).  Bootstrap it
@@ -36,9 +43,9 @@ compiled as part of the normal bootstrap.
 
 `no_build.adb` imports `dlopen` and `dlsym` to load OS functions at runtime.
 On Linux (glibc ≥ 2.34) and macOS these resolve against libc / libSystem
-automatically.  If you are on Windows and you aren't using Msys or Cygwin or some
-other Posix implmementation (as GNAT does) you will not have a standard C 
-library that provides them. You must add a small shim to your project that 
+automatically.  If you are on Windows and you aren't using Msys or Cygwin or 
+some other Posix implmementation (as GNAT does) you will not have a standard
+C library that provides them. You must add a small shim to your project that 
 exports these symbols on top of `LoadLibraryA` / `GetProcAddress`.
 
 Create `windows_dl.ads` and `windows_dl.adb` alongside `build.adb`:

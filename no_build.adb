@@ -1,5 +1,4 @@
 --  no_build.adb -- Implementation of the No_Build package.
-
 with Ada.Text_IO;
 with Ada.Calendar;
 with Ada.Directories;
@@ -142,9 +141,6 @@ package body No_Build is
       C_Open    := To_Open    (Sym (Lib, "open"));
       C_Close   := To_Close   (Sym (Lib, "close"));
    end Load_Posix_Symbols;
-
-   --  Detect_Platform lives in the spec as an expression function (see
-   --  no_build.ads) so it can run during spec elaboration.
 
    --------------------------------------------------------------------------
    --  Logging
