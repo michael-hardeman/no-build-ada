@@ -184,15 +184,6 @@ package No_Build is
    --  objects into a shared library at Output using gcc -shared (Linux /
    --  Windows) or gcc -dynamiclib (macOS).
 
-   procedure Gnatmake
-     (Source  : String;
-      Output  : String        := "";
-      Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null));
-   --  Deprecated: prefer Compile_Program.  Always uses Gnatmake_Compiler
-   --  regardless of the active compiler, so existing build scripts keep
-   --  invoking gnatmake even after Set_Compiler has been called.
-
    --------------------------------------------------------------------------
    --  Path utilities
    --------------------------------------------------------------------------
@@ -325,8 +316,8 @@ package No_Build is
    --
    --  Call this as the very first statement in your build procedure.
    --  If Source_Path is newer than Binary_Path the build script is
-   --  recompiled with gnatmake and then re-executed, passing through the
-   --  original command-line arguments.
+   --  recompiled with the active compiler (Compile_Program) and then
+   --  re-executed, passing through the original command-line arguments.
    --------------------------------------------------------------------------
 
    procedure Go_Rebuild_Urself

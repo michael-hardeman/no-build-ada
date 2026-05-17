@@ -119,6 +119,34 @@ the linker needs to resolve `no_build.adb`'s references to `dlopen` and
 `pragma Warnings (Off, Windows_DL);` (GNAT) or the equivalent in your
 toolchain.
 
+### Windows + GNAT (MinGW) — two options
+
+GNAT/MinGW on Windows ships a `libdl.a` wrapper around `LoadLibraryA` /
+`GetProcAddress`, so you have a choice:
+
+1. **Use the shim above.**  Compiler-agnostic — same `build.adb` keeps
+   working if you ever switch to ObjectAda, Janus, or another toolchain.
+2. **Skip the shim and link MinGW's libdl wrapper.**  Pass `-largs -ldl`
+   on the one-time bootstrap:
+
+   ```
+   gnatmake build.adb -largs -ldl -o build
+   ```
+
+   For self-rebuilds to keep the same link flags, pass them in `Extra`
+   when calling `Go_Rebuild_Urself`:
+
+   ```ada
+   Go_Rebuild_Urself
+     (Binary_Path => "./build",
+      Source_Path => "build.adb",
+      Obj_Dir     => Obj,
+      Extra       => Argument_List'(S ("-largs"), S ("-ldl")));
+   ```
+
+The shim is recommended if you care about toolchain portability; `-ldl` is
+shorter if you intend to stay on GNAT.
+
 ## Quick start
 
 ```ada
@@ -132,7 +160,7 @@ begin
                       Source_Path => "build.adb",
                       Obj_Dir     => Obj);
 
-   Gnatmake ("src/main.adb", Output => "bin/main", Obj_Dir => Obj);
+   Compile_Program ("src/main.adb", Output => "bin/main", Obj_Dir => Obj);
 end Build;
 ```
 
@@ -220,17 +248,6 @@ procedure Compile
 ```
 Compile-only: passes the active compiler's `Compile_Only_Flag` (e.g. `-c` on
 GNAT) so that only `.o` (and `.ali`) files are produced.
-
-```ada
-procedure Gnatmake
-  (Source  : String;
-   Output  : String        := "";
-   Obj_Dir : String        := "";
-   Extra   : Argument_List := (1 .. 0 => null));
-```
-**Deprecated** — prefer `Compile_Program`.  Always uses `Gnatmake_Compiler`
-regardless of the active compiler, so legacy build scripts keep invoking
-`gnatmake` even after `Set_Compiler` has been called.
 
 ### Library builds
 
@@ -347,16 +364,16 @@ procedure Build is
 
    procedure Build_Tool (Tool : String) is
    begin
-      Gnatmake ("tools" / Tool, Output => "tools" / No_Ext (Tool),
-                Obj_Dir => Obj);
+      Compile_Program ("tools" / Tool, Output => "tools" / No_Ext (Tool),
+                       Obj_Dir => Obj);
    end Build_Tool;
 
    procedure Build_And_Run_Example (Example : String) is
       Bin : constant String := "examples" / No_Ext (Example);
    begin
-      Gnatmake ("examples" / Example, Output => Bin,
-                Obj_Dir => Obj,
-                Extra   => Argument_List'(S ("-I."), S ("-Ilib")));
+      Compile_Program ("examples" / Example, Output => Bin,
+                       Obj_Dir => Obj,
+                       Extra   => Argument_List'(S ("-I."), S ("-Ilib")));
       Cmd (Bin);
    end Build_And_Run_Example;
 

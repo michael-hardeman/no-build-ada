@@ -734,29 +734,6 @@ package body No_Build is
    end Build_Shared_Lib;
 
    --------------------------------------------------------------------------
-   --  Gnatmake (deprecated alias — always uses Gnatmake_Compiler)
-   --------------------------------------------------------------------------
-
-   procedure Gnatmake
-     (Source  : String;
-      Output  : String        := "";
-      Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null))
-   is
-      Saved : constant Ada_Compiler := Active_Compiler;
-   begin
-      Active_Compiler := Gnatmake_Compiler;
-      begin
-         Compile_Program (Source, Output, Obj_Dir, Extra);
-      exception
-         when others =>
-            Active_Compiler := Saved;
-            raise;
-      end;
-      Active_Compiler := Saved;
-   end Gnatmake;
-
-   --------------------------------------------------------------------------
    --  Path utilities
    --------------------------------------------------------------------------
 
