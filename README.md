@@ -2,7 +2,7 @@
 
 An Ada port of [nob.h](https://github.com/tsoding/nob.h) — a build system
 that lives entirely in your source tree with no Makefiles, no `.gpr` project
-files, and no external tools beyond your Ada compilter.
+files, and no external tools beyond your Ada compiler.
 
 I have taken steps to try and make this compiler independent. I rely only on
 Ada Standard Library packages and implement platform specific stuff myself.
