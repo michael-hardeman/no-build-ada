@@ -723,8 +723,10 @@ package body No_Build is
                     Objects (1 .. N_Obj));
             when MacOS =>
                Cmd ("gcc",
-                    Argument_List'(S ("-dynamiclib"), S ("-o"), S (Output)) &
-                    Objects (1 .. N_Obj));
+                    Argument_List'(S ("-dynamiclib"),
+                                   S ("-undefined"), S ("dynamic_lookup"), 
+                                   S ("-o"), S (Output)) &
+                                   Objects (1 .. N_Obj));
             when Windows =>
                Cmd ("gcc",
                     Argument_List'(S ("-shared"), S ("-o"), S (Output)) &

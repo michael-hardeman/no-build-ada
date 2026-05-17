@@ -277,7 +277,6 @@ package No_Build is
    type File_Kind is (Regular_File, Directory, Symlink, Other);
    --  Note: Symlink is retained for API compatibility but is never returned
    --  by this implementation.  All special files appear as Other.
-   --  Symlink detection is deferred to Phase 2.
 
    type Walk_Entry is record
       Path  : String_Access;  --  full path relative to the walk root
