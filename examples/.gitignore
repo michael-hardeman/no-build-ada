@@ -3,3 +3,5 @@ foreach
 logging
 file
 pipe
+lib_demo
+str_demo

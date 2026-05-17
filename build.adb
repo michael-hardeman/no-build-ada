@@ -13,17 +13,18 @@ procedure Build is
 
    procedure Build_Tool (Tool : String) is
    begin
-      Gnatmake ("tools" / Tool, Output => "tools" / No_Ext (Tool),
-                Obj_Dir => Obj);
+      Compile_Program ("tools" / Tool, Output => "tools" / No_Ext (Tool),
+                       Obj_Dir => Obj);
    end Build_Tool;
 
-   --  Pass -I lib/ so gnatmake finds library specs and any out-of-date bodies.
+   --  Pass -I lib/ so the compiler finds library specs and any out-of-date
+   --  bodies.
    procedure Build_And_Run_Example (Example : String) is
       Bin : constant String := "examples" / No_Ext (Example);
    begin
-      Gnatmake ("examples" / Example, Output => Bin,
-                Obj_Dir => Obj,
-                Extra   => Argument_List'(S ("-I."), S ("-Ilib")));
+      Compile_Program ("examples" / Example, Output => Bin,
+                       Obj_Dir => Obj,
+                       Extra   => Argument_List'(S ("-I."), S ("-Ilib")));
       Cmd (Bin);
    end Build_And_Run_Example;
 
@@ -33,8 +34,8 @@ begin
                       Obj_Dir     => Obj);
 
    --  Compile library sources into obj/ (non-PIC) and produce a static
-   --  archive.  obj/greet.ali stays there so downstream Gnatmake calls
-   --  can satisfy the "with Greet" dependency without recompiling.
+   --  archive.  obj/greet.ali stays there so downstream Compile_Program
+   --  calls can satisfy the "with Greet" dependency without recompiling.
    Info ("building static library...");
    Build_Static_Lib ("lib", Output => "lib/libgreet.a", Obj_Dir => Obj);
 
