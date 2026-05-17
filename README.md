@@ -52,6 +52,7 @@ Create `windows_dl.ads` and `windows_dl.adb` alongside `build.adb`:
 
 ```ada
 -- windows_dl.ads
+with System;
 package Windows_DL is
    --  Exporting dlopen / dlsym from this unit satisfies the link-time
    --  references in no_build.adb.  Add `with Windows_DL;` to build.adb
@@ -71,7 +72,6 @@ end Windows_DL;
 
 ```ada
 -- windows_dl.adb
-with System;
 package body Windows_DL is
 
    function LoadLibraryA (Name : System.Address) return System.Address;
