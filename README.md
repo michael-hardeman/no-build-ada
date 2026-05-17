@@ -359,51 +359,76 @@ All build failures raise `Build_Error`.
 
 ## Worked example
 
-The `build.adb` in this repository builds static and shared libraries from
-`lib/`, a set of standalone tools in `tools/`, and example programs in
-`examples/`:
+This repository keeps the library (`no_build.ads` / `no_build.adb`) at the
+root and groups everything else under `examples/`:
+
+```
+examples/
+├── build_all.adb     # master build script (compiles everything below)
+├── *.adb             # example programs (file, foreach, lib_demo, ...)
+├── lib/              # demo library (libgreet)
+└── tools/            # standalone tool programs (cat, hex, rot13)
+```
+
+Bootstrap it with:
+
+```
+gnatmake -D examples/obj -I. examples/build_all.adb -o examples/build_all
+./examples/build_all
+```
+
+`examples/build_all.adb` builds static and shared libraries from
+`examples/lib/`, the standalone tools in `examples/tools/`, then compiles
+and runs every other `.adb` in `examples/` (skipping itself):
 
 ```ada
 with No_Build; use No_Build;
 
-procedure Build is
-   Obj : constant String := "obj";
+procedure Build_All is
+   Obj      : constant String := "examples/obj";
+   Tools    : constant String := "examples/tools";
+   Examples : constant String := "examples";
+   Lib      : constant String := "examples/lib";
 
    procedure Build_Tool (Tool : String) is
    begin
-      Compile_Program ("tools" / Tool, Output => "tools" / No_Ext (Tool),
+      Compile_Program (Tools / Tool, Output => Tools / No_Ext (Tool),
                        Obj_Dir => Obj);
    end Build_Tool;
 
    procedure Build_And_Run_Example (Example : String) is
-      Bin : constant String := "examples" / No_Ext (Example);
+      Bin : constant String := Examples / No_Ext (Example);
    begin
-      Compile_Program ("examples" / Example, Output => Bin,
+      if Example = "build_all.adb" then
+         return;  --  Go_Rebuild_Urself handles this one
+      end if;
+      Compile_Program (Examples / Example, Output => Bin,
                        Obj_Dir => Obj,
-                       Extra   => Argument_List'(S ("-I."), S ("-Ilib")));
+                       Extra   => Argument_List'(S ("-I."), S ("-I" & Lib)));
       Cmd (Bin);
    end Build_And_Run_Example;
 
 begin
-   Go_Rebuild_Urself (Binary_Path => "./build",
-                      Source_Path => "build.adb",
-                      Obj_Dir     => Obj);
+   Go_Rebuild_Urself (Binary_Path => "./examples/build_all",
+                      Source_Path => "examples/build_all.adb",
+                      Obj_Dir     => Obj,
+                      Extra       => Argument_List'(1 => S ("-I.")));
 
    Info ("building static library...");
-   Build_Static_Lib ("lib", Output => "lib/libgreet.a", Obj_Dir => Obj);
+   Build_Static_Lib (Lib, Output => Lib / "libgreet.a", Obj_Dir => Obj);
 
    Info ("building shared library...");
-   Build_Shared_Lib ("lib", Output => "lib/libgreet.so",
+   Build_Shared_Lib (Lib, Output => Lib / "libgreet.so",
                      Obj_Dir => Obj / "pic");
 
    Info ("building tools...");
-   For_Each_File ("tools",    Build_Tool'Access,            Suffix => ".adb");
+   For_Each_File (Tools,    Build_Tool'Access,            Suffix => ".adb");
 
    Info ("building and running examples...");
-   For_Each_File ("examples", Build_And_Run_Example'Access, Suffix => ".adb");
+   For_Each_File (Examples, Build_And_Run_Example'Access, Suffix => ".adb");
 
    Info ("Done.");
-end Build;
+end Build_All;
 ```
 
 ## Requirements

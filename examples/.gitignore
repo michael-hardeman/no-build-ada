@@ -1,7 +1,7 @@
-string
-foreach
-logging
+build_all
 file
-pipe
+foreach
 lib_demo
+logging
+pipe
 str_demo

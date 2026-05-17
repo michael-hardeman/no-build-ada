@@ -18,7 +18,7 @@ procedure Str_Demo is
 begin
    S ("""foo"" / ""bar"" / ""baz""",           "foo" / "bar" / "baz");
    S ("No_Ext (""main.adb"")",                 No_Ext ("main.adb"));
-   S ("Base_Name (""foo/bar/baz.txt"")",        Base_Name ("foo/bar/baz.txt"));
+   S ("Base_Name (""foo/bar/baz.txt"")",       Base_Name ("foo/bar/baz.txt"));
    B ("Ends_With (""main.adb"",  "".adb"")",   Ends_With ("main.adb",  ".adb"));
    B ("Ends_With (""main.java"", "".adb"")",   Ends_With ("main.java", ".adb"));
    B ("Ends_With ("""",          "".adb"")",   Ends_With ("",          ".adb"));
