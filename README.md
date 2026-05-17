@@ -370,12 +370,49 @@ examples/
 └── tools/            # standalone tool programs (cat, hex, rot13)
 ```
 
-Bootstrap it with:
+Bootstrap it with the wrapper script (`bootstrap.cmd` on Windows):
+
+```
+./bootstrap.sh
+./examples/build_all
+```
+
+The script just runs `gnatmake`; the full command is:
 
 ```
 gnatmake -D examples/obj -I. examples/build_all.adb -o examples/build_all
-./examples/build_all
 ```
+
+### Why the bootstrap is different here than in your own project
+
+In a normal project (see [Quick start](#quick-start)) you keep `build.adb`
+next to `no_build.ads`/`no_build.adb` at the repo root, and the bootstrap
+is the short form shown there:
+
+```
+gnatmake build.adb -o build   # source and library both at .
+./build
+```
+
+This repo deliberately keeps the root limited to the two files you would
+actually copy into your own project, so the example build script lives
+one level down at `examples/build_all.adb`.  That changes three things:
+
+- **`-I.`** — gnatmake searches the source's own directory for `with`-ed
+  units by default.  Since `build_all.adb` is in `examples/` but
+  `no_build.adb` is at the root, we have to point gnatmake back up with
+  `-I.`.  The same flag is passed to `Go_Rebuild_Urself` (via `Extra`) so
+  the self-rebuild keeps working.
+- **`-D examples/obj`** — keeps `.o` / `.ali` files out of the repo root.
+  A normal project usually wants the same thing, but the *default*
+  `gnatmake build.adb` drops them next to the source, which is fine when
+  the source already lives at the root.
+- **`./examples/build_all`** instead of `./build` — the output binary
+  lives next to its source.
+
+If you copy `no_build.ads`/`no_build.adb` into your own project, ignore
+all of the above and follow [Quick start](#quick-start) — the one-line
+bootstrap is the normal path.
 
 `examples/build_all.adb` builds static and shared libraries from
 `examples/lib/`, the standalone tools in `examples/tools/`, then compiles
