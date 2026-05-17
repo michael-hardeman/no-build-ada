@@ -425,10 +425,18 @@ package body No_Build is
    begin
       Log ("CMD", Display);
 
-      --  If the program contains a path separator, use it as-is.
+      --  If the program contains a path separator, use it as-is.  On
+      --  Windows also probe with ".exe" appended, since callers naturally
+      --  pass "examples/file" but the linker produced "examples/file.exe".
       if Has_Slash then
          if Probe (Program) then
             return Program;
+         end if;
+         if Platform = Windows
+           and then not Ends_With (Program, ".exe")
+           and then Probe (Program & ".exe")
+         then
+            return Program & ".exe";
          end if;
          Log ("ERRO", "program not found: " & Program);
          raise Build_Error with "program not found: " & Program;
@@ -1647,6 +1655,18 @@ package body No_Build is
          return;
       end if;
 
+      --  A previous rebuild may have left a .old behind: on Windows the
+      --  running exe owns its file and we can't delete it until after the
+      --  re-exec replaces the process, by which time we're gone.  Clean
+      --  it up here on the next invocation, when nothing is holding it.
+      if Path_Exists (Old_Binary) then
+         begin
+            Remove_Path (Old_Binary);
+         exception
+            when others => null;
+         end;
+      end if;
+
       if Is_Newer (Source_Path, Bin) then
          Info ("build script changed, rebuilding: " & Source_Path);
 
@@ -1665,8 +1685,15 @@ package body No_Build is
                raise;
          end;
 
+         --  Best-effort delete: on Windows the .old file is the still-
+         --  running process and the OS blocks delete.  The startup sweep
+         --  above will pick it up on the next run.
          if Path_Exists (Old_Binary) then
-            Remove_Path (Old_Binary);
+            begin
+               Remove_Path (Old_Binary);
+            exception
+               when others => null;
+            end;
          end if;
 
          declare
