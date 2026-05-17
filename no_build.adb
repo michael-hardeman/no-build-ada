@@ -1486,17 +1486,25 @@ package body No_Build is
       Obj_Dir     : String        := "";
       Extra       : Argument_List := (1 .. 0 => null))
    is
-      Old_Binary : constant String := Binary_Path & ".old";
+      --  On Windows gnatmake produces Binary_Path & ".exe" when the caller
+      --  passes the unsuffixed name, so normalize here for the timestamp
+      --  check, rename-as-backup, and re-exec.  Compile_Program still gets
+      --  the original Binary_Path; gnatmake handles the suffix itself.
+      Bin : constant String :=
+        (if Platform = Windows and then not Ends_With (Binary_Path, ".exe")
+         then Binary_Path & ".exe"
+         else Binary_Path);
+      Old_Binary : constant String := Bin & ".old";
    begin
       if not Path_Exists (Source_Path) then
          return;
       end if;
 
-      if Is_Newer (Source_Path, Binary_Path) then
+      if Is_Newer (Source_Path, Bin) then
          Info ("build script changed, rebuilding: " & Source_Path);
 
-         if Path_Exists (Binary_Path) then
-            Rename_Path (Binary_Path, Old_Binary);
+         if Path_Exists (Bin) then
+            Rename_Path (Bin, Old_Binary);
          end if;
 
          begin
@@ -1505,7 +1513,7 @@ package body No_Build is
          exception
             when others =>
                if Path_Exists (Old_Binary) then
-                  Rename_Path (Old_Binary, Binary_Path);
+                  Rename_Path (Old_Binary, Bin);
                end if;
                raise;
          end;
@@ -1520,14 +1528,14 @@ package body No_Build is
             for I in Args'Range loop
                Args (I) := new String'(Ada.Command_Line.Argument (I));
             end loop;
-            Info ("re-executing: " & Binary_Path);
+            Info ("re-executing: " & Bin);
             declare
                Dummy : System.Address;
             begin
                case Platform is
                   when Linux | MacOS =>
                      Dummy := Posix_Spawn
-                       (Binary_Path, Args,
+                       (Bin, Args,
                         Stdout_File   => null,
                         Stderr_File   => null,
                         Wait_For_Exit => True);
@@ -1535,7 +1543,7 @@ package body No_Build is
                      C_Exit (0);
                   when Windows =>
                      Dummy := Win32_Spawn
-                       (Binary_Path, Args,
+                       (Bin, Args,
                         Stdout_File   => null,
                         Stderr_File   => null,
                         Wait_For_Exit => True);
