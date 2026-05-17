@@ -10,12 +10,12 @@
 --     has been modified (Go_Rebuild_Urself technology).
 
 with System;
+with Ada.Directories;
+with Ada.Environment_Variables;
 
 package No_Build is
 
    pragma Elaborate_Body;
-   --  Ensures the body is elaborated before any client, so the Detect_Platform
-   --  call that initialises Platform is safe at elaboration time.
 
    Build_Error : exception;
    --  Raised when any build step fails (non-zero exit code or OS error).
@@ -26,9 +26,15 @@ package No_Build is
 
    type Platform_Kind is (Linux, MacOS, Windows);
 
-   function Detect_Platform return Platform_Kind;
-   --  Detect the current platform by probing well-known environment variables
-   --  and filesystem paths.  Called once at elaboration to set Platform.
+   function Detect_Platform return Platform_Kind is
+     (if Ada.Environment_Variables.Exists ("WINDIR") then Windows
+      --  WINDIR is set on every Windows installation and never on POSIX.
+      elsif Ada.Directories.Exists ("/usr/bin/sw_vers") then MacOS
+      --  sw_vers ships with every macOS install and is absent on Linux.
+      else Linux);
+   --  Expression function so it can be called during spec elaboration to
+   --  initialise Platform without tripping the access-before-elaboration
+   --  check.
 
    Platform : constant Platform_Kind := Detect_Platform;
    --  Package-wide constant; use this instead of per-call OS checks.
@@ -46,6 +52,7 @@ package No_Build is
 
    type String_Access is access String;
    type Argument_List is array (Positive range <>) of String_Access;
+   type Argument_List_Access is access Argument_List;
 
    function S (Str : String) return String_Access;
    --  Heap-allocate Str; convenience for building Argument_List literals.
@@ -133,18 +140,110 @@ package No_Build is
    --------------------------------------------------------------------------
 
    type Ada_Compiler is record
-      Executable        : String_Access;  --  e.g. "gnatmake"
-      Obj_Flag          : String_Access;  --  flag selecting the object dir
-      Out_Flag          : String_Access;  --  flag selecting the output binary
-      Compile_Only_Flag : String_Access;  --  flag suppressing the link step
+      Executable            : String_Access;         --  e.g. "gnatmake"
+      Compile_Flags         : Argument_List_Access;  --  always-passed compile flags
+      PIC_Flags             : Argument_List_Access;  --  extra flags when compiling for a shared lib
+      Obj_Flag              : String_Access;         --  flag selecting the object dir
+      Out_Flag              : String_Access;         --  flag selecting the output binary
+      Compile_Only_Flag     : String_Access;         --  flag suppressing the link step
+      Shared_Linker         : String_Access;         --  driver used to link shared libs
+      Shared_Flags          : Argument_List_Access;  --  flags placed before Shared_Out_Flag
+      Shared_Out_Flag       : String_Access;         --  output flag for the shared linker
+      Static_Archiver       : String_Access;         --  archiver used for static libs
+      Static_Archiver_Flags : Argument_List_Access;  --  flags passed to the archiver
    end record;
 
    Gnatmake_Compiler : constant Ada_Compiler :=
-     (Executable        => new String'("gnatmake"),
-      Obj_Flag          => new String'("-D"),
-      Out_Flag          => new String'("-o"),
-      Compile_Only_Flag => new String'("-c"));
-   --  Default compiler descriptor; matches the GNAT toolchain.
+     (Executable            => new String'("gnatmake"),
+      Compile_Flags         => new Argument_List'(1 .. 0 => null),
+      PIC_Flags             =>
+        (case Platform is
+           when Linux | MacOS =>
+             new Argument_List'(1 => new String'("-fPIC")),
+           when Windows =>
+             new Argument_List'(1 .. 0 => null)),
+      Obj_Flag              => new String'("-D"),
+      Out_Flag              => new String'("-o"),
+      Compile_Only_Flag     => new String'("-c"),
+      Shared_Linker         => new String'("gcc"),
+      Shared_Flags          =>
+        (case Platform is
+           when MacOS =>
+             new Argument_List'(new String'("-dynamiclib"),
+                                new String'("-undefined"),
+                                new String'("dynamic_lookup")),
+           when Linux | Windows =>
+             new Argument_List'(1 => new String'("-shared"))),
+      Shared_Out_Flag       => new String'("-o"),
+      Static_Archiver       => new String'("ar"),
+      Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
+   --  Default compiler descriptor; matches the GNAT toolchain on the host.
+   --  Each of Compile_Flags / PIC_Flags / Shared_Flags / Static_Archiver_Flags
+   --  is a list whose default is picked from Platform at elaboration, so
+   --  the host-correct toolchain switches are baked in.  Override any field
+   --  to retarget at a different toolchain (ObjectAda, Janus, an LLVM-Ada
+   --  variant, MSVC's lib.exe, etc.).
+
+   --  ------------------------------------------------------------------------
+   --  PTC ObjectAda (formerly Aonix).  UNTESTED -- provided as a starting
+   --  point to show how a non-GNAT toolchain plugs in.  Notes:
+   --    * The closest gnatmake-equivalent driver is "adabuild".  In practice
+   --      adabuild prefers a project file (.prj); using it on a raw .adb may
+   --      need a wrapper or extra flags not captured here.
+   --    * Obj_Flag / Compile_Only_Flag are guesses -- verify against your
+   --      installed ObjectAda's adabuild(1) / ada(1) docs.
+   --    * On POSIX ObjectAda usually delegates final link to gcc, so the
+   --      Shared_Linker / Static_Archiver defaults below mirror Gnatmake.
+   --  ------------------------------------------------------------------------
+   ObjectAda_Compiler : constant Ada_Compiler :=
+     (Executable            => new String'("adabuild"),
+      Compile_Flags         => new Argument_List'(1 .. 0 => null),
+      PIC_Flags             =>
+        (case Platform is
+           when Linux | MacOS =>
+             new Argument_List'(1 => new String'("-fpic")),
+           when Windows =>
+             new Argument_List'(1 .. 0 => null)),
+      Obj_Flag              => new String'("-D"),
+      Out_Flag              => new String'("-o"),
+      Compile_Only_Flag     => new String'("-c"),
+      Shared_Linker         => new String'("gcc"),
+      Shared_Flags          =>
+        (case Platform is
+           when MacOS =>
+             new Argument_List'(new String'("-dynamiclib"),
+                                new String'("-undefined"),
+                                new String'("dynamic_lookup")),
+           when Linux | Windows =>
+             new Argument_List'(1 => new String'("-shared"))),
+      Shared_Out_Flag       => new String'("-o"),
+      Static_Archiver       => new String'("ar"),
+      Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
+
+   --  ------------------------------------------------------------------------
+   --  RR Software Janus/Ada.  UNTESTED -- provided as a starting point.
+   --  Notes:
+   --    * Janus historically uses DOS-style "/SWITCH" flags and a separate
+   --      compile + link pipeline (jacomp -> jalink, or similar).  The single
+   --      Executable here will likely need to be a small wrapper that drives
+   --      both steps.
+   --    * Janus is Windows-only in practice, so PIC_Flags is empty.
+   --    * Static_Archiver / Shared_Linker default to MinGW gcc/ar, which is
+   --      what's available on most Janus development hosts; swap for MSVC's
+   --      lib.exe / link.exe if you're on a pure-Microsoft toolchain.
+   --  ------------------------------------------------------------------------
+   Janus_Compiler : constant Ada_Compiler :=
+     (Executable            => new String'("janus"),
+      Compile_Flags         => new Argument_List'(1 .. 0 => null),
+      PIC_Flags             => new Argument_List'(1 .. 0 => null),
+      Obj_Flag              => new String'("/OBJDIR="),
+      Out_Flag              => new String'("/OUT="),
+      Compile_Only_Flag     => new String'("/COMPILE"),
+      Shared_Linker         => new String'("gcc"),
+      Shared_Flags          => new Argument_List'(1 => new String'("-shared")),
+      Shared_Out_Flag       => new String'("-o"),
+      Static_Archiver       => new String'("ar"),
+      Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
 
    procedure Set_Compiler (C : Ada_Compiler);
    --  Replace the active compiler descriptor.  Subsequent calls to
@@ -173,7 +272,8 @@ package No_Build is
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null));
    --  Compile every .adb in Src_Dir (compile-only), then archive the objects
-   --  into a static library at Output (e.g. "lib/libfoo.a") using ar(1).
+   --  into a static library at Output (e.g. "lib/libfoo.a") using the
+   --  active compiler's Static_Archiver (defaults to "ar rcs").
 
    procedure Build_Shared_Lib
      (Src_Dir : String;
@@ -181,8 +281,9 @@ package No_Build is
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null));
    --  Compile every .adb in Src_Dir with -fPIC (compile-only), then link the
-   --  objects into a shared library at Output using gcc -shared (Linux /
-   --  Windows) or gcc -dynamiclib (macOS).
+   --  objects into a shared library at Output using the active compiler's
+   --  Shared_Linker (defaults to "gcc") with -shared (Linux / Windows) or
+   --  -dynamiclib (macOS) selected from the host platform.
 
    --------------------------------------------------------------------------
    --  Path utilities

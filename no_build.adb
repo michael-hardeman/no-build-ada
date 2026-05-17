@@ -12,6 +12,7 @@ with Interfaces.C;
 with Interfaces.C.Strings;
 with System;
 with System.Multiprocessors;
+with System.Storage_Elements;
 
 package body No_Build is
 
@@ -142,24 +143,8 @@ package body No_Build is
       C_Close   := To_Close   (Sym (Lib, "close"));
    end Load_Posix_Symbols;
 
-   --------------------------------------------------------------------------
-   --  Platform detection
-   --------------------------------------------------------------------------
-
-   function Detect_Platform return Platform_Kind is
-   begin
-      --  WINDIR is a Windows system environment variable that is always
-      --  present on any Windows installation and never set on POSIX systems.
-      if Ada.Environment_Variables.Exists ("WINDIR") then
-         return Windows;
-      --  /usr/bin/sw_vers is a macOS system utility present on every macOS
-      --  installation since 10.3 and absent on Linux.
-      elsif Ada.Directories.Exists ("/usr/bin/sw_vers") then
-         return MacOS;
-      else
-         return Linux;
-      end if;
-   end Detect_Platform;
+   --  Detect_Platform lives in the spec as an expression function (see
+   --  no_build.ads) so it can run during spec elaboration.
 
    --------------------------------------------------------------------------
    --  Logging
@@ -458,13 +443,11 @@ package body No_Build is
       Free_Argv (Argv);
 
       if not Wait_For_Exit then
-         --  Return the child PID for async tracking.
-         declare
-            function To_Address is new Ada.Unchecked_Conversion
-              (int, System.Address);
-         begin
-            return To_Address (Pid);
-         end;
+         --  Return the child PID for async tracking.  Pack the int PID into
+         --  a pointer-sized Integer_Address first so the conversion to
+         --  System.Address is size-safe.
+         return System.Storage_Elements.To_Address
+                  (System.Storage_Elements.Integer_Address (Pid));
       end if;
 
       --  Synchronous: wait for child.
@@ -488,9 +471,8 @@ package body No_Build is
    --  Wait for a specific PID.  Returns the exit status.
    function Posix_Wait (Pid_Addr : System.Address) return Integer is
       use Interfaces.C;
-      function To_Int is new Ada.Unchecked_Conversion
-        (System.Address, int);
-      Pid    : constant int := To_Int (Pid_Addr);
+      Pid    : constant int :=
+        int (System.Storage_Elements.To_Integer (Pid_Addr));
       Status : aliased int;
       Waited : int;
    begin
@@ -604,7 +586,8 @@ package body No_Build is
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null))
    is
-      C : Ada_Compiler renames Active_Compiler;
+      C        : Ada_Compiler renames Active_Compiler;
+      Defaults : constant Argument_List := C.Compile_Flags.all;
    begin
       if Obj_Dir /= "" then
          Make_Dirs (Obj_Dir);
@@ -612,18 +595,21 @@ package body No_Build is
 
       if Output = "" and then Obj_Dir = "" then
          Cmd (C.Executable.all,
-              Argument_List'(1 => S (Source)) & Extra);
+              Argument_List'(1 => S (Source)) & Defaults & Extra);
       elsif Output = "" then
          Cmd (C.Executable.all,
-              Argument_List'(S (Source), C.Obj_Flag, S (Obj_Dir)) & Extra);
+              Argument_List'(S (Source), C.Obj_Flag, S (Obj_Dir))
+              & Defaults & Extra);
       elsif Obj_Dir = "" then
          Cmd (C.Executable.all,
-              Argument_List'(S (Source), C.Out_Flag, S (Output)) & Extra);
+              Argument_List'(S (Source), C.Out_Flag, S (Output))
+              & Defaults & Extra);
       else
          Cmd (C.Executable.all,
               Argument_List'(S (Source),
                              C.Obj_Flag, S (Obj_Dir),
-                             C.Out_Flag, S (Output)) & Extra);
+                             C.Out_Flag, S (Output))
+              & Defaults & Extra);
       end if;
    end Compile_Program;
 
@@ -659,13 +645,8 @@ package body No_Build is
       Eff_Obj  : constant String := (if Obj_Dir /= "" then Obj_Dir else ".");
       Search   : Search_Type;
       Dir_Ent  : Directory_Entry_Type;
-      --  -fPIC is needed on POSIX; not meaningful on Windows.
-      PIC_Flag : constant Argument_List :=
-        (if PIC and then Platform /= Windows
-         then Argument_List'(1 => S ("-fPIC"))
-         else Argument_List'(1 .. 0 => null));
       Flags    : constant Argument_List :=
-        (if PIC then PIC_Flag & Extra else Extra);
+        (if PIC then Active_Compiler.PIC_Flags.all & Extra else Extra);
    begin
       N_Obj := 0;
       if Obj_Dir /= "" then
@@ -694,13 +675,17 @@ package body No_Build is
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null))
    is
+      C       : Ada_Compiler renames Active_Compiler;
       Objects : Argument_List (1 .. 256) := (others => null);
       N_Obj   : Natural;
    begin
       Build_Lib_Objects (Src_Dir, Obj_Dir, PIC => False,
                          Extra => Extra, Objects => Objects, N_Obj => N_Obj);
       if N_Obj > 0 then
-         Cmd ("ar", Argument_List'(S ("rcs"), S (Output)) & Objects (1 .. N_Obj));
+         Cmd (C.Static_Archiver.all,
+              C.Static_Archiver_Flags.all
+              & Argument_List'(1 => S (Output))
+              & Objects (1 .. N_Obj));
       end if;
    end Build_Static_Lib;
 
@@ -710,28 +695,17 @@ package body No_Build is
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null))
    is
+      C       : Ada_Compiler renames Active_Compiler;
       Objects : Argument_List (1 .. 256) := (others => null);
       N_Obj   : Natural;
    begin
       Build_Lib_Objects (Src_Dir, Obj_Dir, PIC => True,
                          Extra => Extra, Objects => Objects, N_Obj => N_Obj);
       if N_Obj > 0 then
-         case Platform is
-            when Linux =>
-               Cmd ("gcc",
-                    Argument_List'(S ("-shared"), S ("-o"), S (Output)) &
-                    Objects (1 .. N_Obj));
-            when MacOS =>
-               Cmd ("gcc",
-                    Argument_List'(S ("-dynamiclib"),
-                                   S ("-undefined"), S ("dynamic_lookup"), 
-                                   S ("-o"), S (Output)) &
-                                   Objects (1 .. N_Obj));
-            when Windows =>
-               Cmd ("gcc",
-                    Argument_List'(S ("-shared"), S ("-o"), S (Output)) &
-                    Objects (1 .. N_Obj));
-         end case;
+         Cmd (C.Shared_Linker.all,
+              C.Shared_Flags.all
+              & Argument_List'(C.Shared_Out_Flag, S (Output))
+              & Objects (1 .. N_Obj));
       end if;
    end Build_Shared_Lib;
 
