@@ -89,6 +89,13 @@ package No_Build is
       Redir   : Redirect);
    --  Like Cmd, but stdout and/or stderr are redirected to files.
 
+   function Capture
+     (Program : String;
+      Args    : Argument_List := (1 .. 0 => null)) return String;
+   --  Run Program with Args, capture stdout, and return it trimmed of
+   --  leading/trailing whitespace.  Stderr is inherited.  Raises Build_Error
+   --  on non-zero exit or if the program cannot be located.
+
    --------------------------------------------------------------------------
    --  Parallel process execution
    --------------------------------------------------------------------------
@@ -139,6 +146,17 @@ package No_Build is
    --  object-directory flag, and a compile-only flag.
    --------------------------------------------------------------------------
 
+   type Runtime_Probe_Func is access function return String;
+   --  Returns a single path or flag that Build_Shared_Lib appends verbatim
+   --  to the shared-link command line.  Used to resolve the Ada runtime
+   --  (e.g. libgnat) without hard-coding install paths.  Null disables.
+
+   function Find_Gnat_Runtime return String;
+   --  Default probe for the GNAT toolchain.  Captures
+   --  `gcc -print-libgcc-file-name` (always findable on a working gcc
+   --  install) and derives the sibling adalib/libgnat.a path.  Works on
+   --  any GNAT layout where adalib lives next to libgcc.
+
    type Ada_Compiler is record
       Executable            : String_Access;         --  e.g. "gnatmake"
       Compile_Flags         : Argument_List_Access;  --  always-passed compile flags
@@ -149,6 +167,7 @@ package No_Build is
       Shared_Linker         : String_Access;         --  driver used to link shared libs
       Shared_Flags          : Argument_List_Access;  --  flags placed before Shared_Out_Flag
       Shared_Out_Flag       : String_Access;         --  output flag for the shared linker
+      Shared_Runtime_Probe  : Runtime_Probe_Func;    --  see Runtime_Probe_Func; null = no probe
       Static_Archiver       : String_Access;         --  archiver used for static libs
       Static_Archiver_Flags : Argument_List_Access;  --  flags passed to the archiver
    end record;
@@ -175,6 +194,7 @@ package No_Build is
            when Linux | Windows =>
              new Argument_List'(1 => new String'("-shared"))),
       Shared_Out_Flag       => new String'("-o"),
+      Shared_Runtime_Probe  => Find_Gnat_Runtime'Access,
       Static_Archiver       => new String'("ar"),
       Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
    --  Default compiler descriptor; matches the GNAT toolchain on the host.
@@ -217,6 +237,10 @@ package No_Build is
            when Linux | Windows =>
              new Argument_List'(1 => new String'("-shared"))),
       Shared_Out_Flag       => new String'("-o"),
+      Shared_Runtime_Probe  => Find_Gnat_Runtime'Access,
+      --  ObjectAda usually delegates final link to gcc and picks up the
+      --  GNAT runtime layout; if you're using ObjectAda with its own
+      --  runtime, point this at your own probe instead.
       Static_Archiver       => new String'("ar"),
       Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
 
@@ -242,6 +266,9 @@ package No_Build is
       Shared_Linker         => new String'("gcc"),
       Shared_Flags          => new Argument_List'(1 => new String'("-shared")),
       Shared_Out_Flag       => new String'("-o"),
+      Shared_Runtime_Probe  => null,
+      --  Janus has no GNAT runtime; leave null and let the user supply
+      --  Janus-runtime link flags via Build_Shared_Lib's Extra parameter.
       Static_Archiver       => new String'("ar"),
       Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
 

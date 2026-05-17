@@ -92,6 +92,11 @@ package body No_Build is
      (FD : Interfaces.C.int) return Interfaces.C.int;
    pragma Convention (C, Close_Func);
 
+   type Rename_Func is access function
+     (Old_Path : System.Address;
+      New_Path : System.Address) return Interfaces.C.int;
+   pragma Convention (C, Rename_Func);
+
    function To_Fork    is new Ada.Unchecked_Conversion (System.Address, Fork_Func);
    function To_Execv   is new Ada.Unchecked_Conversion (System.Address, Execv_Func);
    function To_Waitpid is new Ada.Unchecked_Conversion (System.Address, Waitpid_Func);
@@ -99,6 +104,7 @@ package body No_Build is
    function To_Dup2    is new Ada.Unchecked_Conversion (System.Address, Dup2_Func);
    function To_Open    is new Ada.Unchecked_Conversion (System.Address, Open_Func);
    function To_Close   is new Ada.Unchecked_Conversion (System.Address, Close_Func);
+   function To_Rename  is new Ada.Unchecked_Conversion (System.Address, Rename_Func);
 
    --  Function pointers — initialized by Load_Posix_Symbols (called at
    --  elaboration after Detect_Platform).
@@ -109,6 +115,7 @@ package body No_Build is
    C_Dup2    : Dup2_Func    := null;
    C_Open    : Open_Func    := null;
    C_Close   : Close_Func   := null;
+   C_Rename  : Rename_Func  := null;
 
    --  POSIX constants for open(2)
    O_WRONLY   : constant := 1;
@@ -140,6 +147,7 @@ package body No_Build is
       C_Dup2    := To_Dup2    (Sym (Lib, "dup2"));
       C_Open    := To_Open    (Sym (Lib, "open"));
       C_Close   := To_Close   (Sym (Lib, "close"));
+      C_Rename  := To_Rename  (Sym (Lib, "rename"));
    end Load_Posix_Symbols;
 
    --------------------------------------------------------------------------
@@ -166,6 +174,10 @@ package body No_Build is
    Win_FILE_SHARE_WRITE      : constant Win_DWORD := 16#0000_0002#;
    Win_CREATE_ALWAYS         : constant Win_DWORD := 2;
    Win_FILE_ATTRIBUTE_NORMAL : constant Win_DWORD := 16#0000_0080#;
+   --  MoveFileExA flags.  REPLACE_EXISTING overwrites the target,
+   --  COPY_ALLOWED lets the OS fall back to copy+delete across volumes.
+   Win_MOVEFILE_REPLACE_EXISTING : constant Win_DWORD := 16#0000_0001#;
+   Win_MOVEFILE_COPY_ALLOWED     : constant Win_DWORD := 16#0000_0002#;
 
    type Win_Startup_Info is record
       Cb              : Win_DWORD      := 0;
@@ -248,6 +260,12 @@ package body No_Build is
    type ExitProcess_Func is access procedure (Exit_Code : Win_DWORD);
    pragma Convention (Stdcall, ExitProcess_Func);
 
+   type MoveFileEx_Func is access function
+     (Existing : System.Address;
+      New_Name : System.Address;
+      Flags    : Win_DWORD) return Win_BOOL;
+   pragma Convention (Stdcall, MoveFileEx_Func);
+
    function To_CreateProcess       is new Ada.Unchecked_Conversion
      (System.Address, CreateProcess_Func);
    function To_WaitForSingleObject is new Ada.Unchecked_Conversion
@@ -262,6 +280,8 @@ package body No_Build is
      (System.Address, GetStdHandle_Func);
    function To_ExitProcess         is new Ada.Unchecked_Conversion
      (System.Address, ExitProcess_Func);
+   function To_MoveFileEx          is new Ada.Unchecked_Conversion
+     (System.Address, MoveFileEx_Func);
 
    W_CreateProcess       : CreateProcess_Func       := null;
    W_WaitForSingleObject : WaitForSingleObject_Func := null;
@@ -270,6 +290,7 @@ package body No_Build is
    W_CreateFile          : CreateFile_Func          := null;
    W_GetStdHandle        : GetStdHandle_Func        := null;
    W_ExitProcess         : ExitProcess_Func         := null;
+   W_MoveFileEx          : MoveFileEx_Func          := null;
 
    procedure Load_Win32_Symbols is
       use Interfaces.C.Strings;
@@ -296,6 +317,8 @@ package body No_Build is
         To_GetStdHandle        (Sym (Lib, "GetStdHandle"));
       W_ExitProcess         :=
         To_ExitProcess         (Sym (Lib, "ExitProcess"));
+      W_MoveFileEx          :=
+        To_MoveFileEx          (Sym (Lib, "MoveFileExA"));
 
       if W_CreateProcess = null
         or else W_WaitForSingleObject = null
@@ -304,6 +327,7 @@ package body No_Build is
         or else W_CreateFile = null
         or else W_GetStdHandle = null
         or else W_ExitProcess = null
+        or else W_MoveFileEx = null
       then
          raise Build_Error
            with "failed to resolve kernel32.dll symbols";
@@ -898,6 +922,45 @@ package body No_Build is
       end case;
    end Cmd;
 
+   function Capture
+     (Program : String;
+      Args    : Argument_List := (1 .. 0 => null)) return String
+   is
+      Tmp_Path : constant String := ".no_build_capture";
+      Redir    : constant Redirect :=
+        (Stdout => new String'(Tmp_Path), Stderr => null);
+
+      function Trim (S : String) return String is
+         function Is_WS (C : Character) return Boolean is
+           (C = ' ' or else C = ASCII.HT
+              or else C = ASCII.LF or else C = ASCII.CR);
+         First : Natural := S'First;
+         Last  : Natural := S'Last;
+      begin
+         while First <= Last and then Is_WS (S (First)) loop
+            First := First + 1;
+         end loop;
+         while Last >= First and then Is_WS (S (Last)) loop
+            Last := Last - 1;
+         end loop;
+         return S (First .. Last);
+      end Trim;
+   begin
+      Cmd (Program, Args, Redir);
+      declare
+         Content : constant String := Read_File (Tmp_Path);
+      begin
+         Remove_Path (Tmp_Path);
+         return Trim (Content);
+      end;
+   exception
+      when others =>
+         if Path_Exists (Tmp_Path) then
+            Remove_Path (Tmp_Path);
+         end if;
+         raise;
+   end Capture;
+
    function Cmd_Async
      (Program : String;
       Args    : Argument_List;
@@ -1110,6 +1173,17 @@ package body No_Build is
       C       : Ada_Compiler renames Active_Compiler;
       Objects : Argument_List (1 .. 256) := (others => null);
       N_Obj   : Natural;
+
+      --  Resolve the Ada runtime by invoking Shared_Runtime_Probe (if set)
+      --  and treating its return value as a single positional link arg.
+      --  Lets the linker find e.g. libgnat without a host-specific -L.
+      function Probe_Args return Argument_List is
+      begin
+         if C.Shared_Runtime_Probe = null then
+            return (1 .. 0 => null);
+         end if;
+         return (1 => S (C.Shared_Runtime_Probe.all));
+      end Probe_Args;
    begin
       Build_Lib_Objects (Src_Dir, Obj_Dir, PIC => True,
                          Extra => Extra, Objects => Objects, N_Obj => N_Obj);
@@ -1117,9 +1191,41 @@ package body No_Build is
          Cmd (C.Shared_Linker.all,
               C.Shared_Flags.all
               & Argument_List'(C.Shared_Out_Flag, S (Output))
-              & Objects (1 .. N_Obj));
+              & Objects (1 .. N_Obj)
+              & Probe_Args);
       end if;
    end Build_Shared_Lib;
+
+   function Find_Gnat_Runtime return String is
+      Libgcc  : constant String := Capture
+        ("gcc", Argument_List'(1 => S ("-print-libgcc-file-name")));
+      --  Strip the libgcc.a filename to get the gcc install dir, then
+      --  look for the sibling adalib/.  Works for any GNAT layout where
+      --  the runtime lives next to libgcc.
+      Slash : Natural := 0;
+   begin
+      for I in reverse Libgcc'Range loop
+         if Libgcc (I) = '/' or else Libgcc (I) = '\' then
+            Slash := I;
+            exit;
+         end if;
+      end loop;
+      if Slash = 0 then
+         return Libgcc;  --  no separator found; hand back as-is
+      end if;
+      declare
+         Adalib : constant String := Libgcc (Libgcc'First .. Slash) & "adalib/";
+         Pic    : constant String := Adalib & "libgnat_pic.a";
+      begin
+         --  Linux GNAT ships a PIC variant for shared-lib use; everywhere
+         --  else (Windows MinGW, macOS) the plain libgnat.a links into a
+         --  shared object just fine.
+         if Path_Exists (Pic) then
+            return Pic;
+         end if;
+         return Adalib & "libgnat.a";
+      end;
+   end Find_Gnat_Runtime;
 
    --------------------------------------------------------------------------
    --  Path utilities
@@ -1215,13 +1321,54 @@ package body No_Build is
    end Make_Dirs;
 
    procedure Rename_Path (Old_Path, New_Path : String) is
+      use Interfaces.C.Strings;
+      use type Interfaces.C.int;
+      use type Interfaces.C.unsigned;
+
+      --  Native rename succeeds even when the source is a running
+      --  executable (Windows holds an exclusive handle that blocks delete
+      --  but not rename), which is exactly what Go_Rebuild_Urself needs.
+      --  Copy+delete is kept as a fallback so cross-filesystem renames
+      --  (POSIX EXDEV) still work.
+      function Native_Rename return Boolean is
+         Old_C : chars_ptr := New_String (Old_Path);
+         New_C : chars_ptr := New_String (New_Path);
+         OK    : Boolean   := False;
+      begin
+         case Platform is
+            when Linux | MacOS =>
+               if C_Rename /= null then
+                  OK := C_Rename
+                          (To_Address (Old_C), To_Address (New_C)) = 0;
+               end if;
+            when Windows =>
+               if W_MoveFileEx /= null then
+                  OK := W_MoveFileEx
+                          (To_Address (Old_C), To_Address (New_C),
+                           Win_MOVEFILE_REPLACE_EXISTING
+                             or Win_MOVEFILE_COPY_ALLOWED) /= 0;
+               end if;
+         end case;
+         Free (Old_C);
+         Free (New_C);
+         return OK;
+      end Native_Rename;
    begin
       Log ("RENAME", Old_Path & " -> " & New_Path);
+      if Native_Rename then
+         return;
+      end if;
+
+      --  Fallback: copy then delete.  Works across filesystems but cannot
+      --  delete a running .exe on Windows.  preserve=all_attributes keeps
+      --  the executable bit (GNAT extension; harmless on other toolchains
+      --  that ignore unknown Form strings).
       if Is_Dir (Old_Path) then
          Copy_Dir (Old_Path, New_Path);
          Ada.Directories.Delete_Tree (Old_Path);
       else
-         Ada.Directories.Copy_File (Old_Path, New_Path);
+         Ada.Directories.Copy_File
+           (Old_Path, New_Path, Form => "preserve=all_attributes");
          Ada.Directories.Delete_File (Old_Path);
       end if;
    exception
@@ -1372,7 +1519,7 @@ package body No_Build is
       Log ("CP", Src & " -> " & Dst);
       Ada.Directories.Copy_File
         (Source_Name => Src, Target_Name => Dst,
-         Form        => "");
+         Form        => "preserve=all_attributes");
    end Copy_File;
 
    procedure Copy_Dir (Src, Dst : String) is
