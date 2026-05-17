@@ -1240,13 +1240,19 @@ package body No_Build is
    --------------------------------------------------------------------------
 
    function "/" (Left, Right : String) return String is
+      --  Use the native separator: Windows tools accept '/' in many places
+      --  but mixing styles in a single absolute path (e.g.
+      --  "C:\Windows\System32/cmd.exe") trips some Win32 lookups.  Accept
+      --  either separator at Left's tail to avoid doubling up.
+      Sep : constant Character :=
+        (if Platform = Windows then '\' else '/');
    begin
       if Left = "" then
          return Right;
-      elsif Left (Left'Last) = '/' then
+      elsif Left (Left'Last) = '/' or else Left (Left'Last) = '\' then
          return Left & Right;
       else
-         return Left & "/" & Right;
+         return Left & Sep & Right;
       end if;
    end "/";
 
