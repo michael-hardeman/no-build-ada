@@ -70,7 +70,15 @@ package No_Build is
    --  Run Program with no arguments.
 
    procedure Sh (Command : String);
-   --  Run Command via the platform shell (/bin/sh on POSIX, cmd.exe on Windows).
+   --  Run Command via the platform shell (/bin/sh on POSIX, cmd.exe on
+   --  Windows).  The two shells do NOT share syntax, so Command is not
+   --  portable -- expect to branch on Platform when using shell features.
+   --  Known gotchas on cmd.exe:
+   --    * single quotes ('foo') are literal, not string delimiters
+   --    * '!' may trigger delayed expansion if it's enabled
+   --    * paths in piped sub-commands prefer backslashes
+   --  For portable command execution, prefer Cmd (which uses CreateProcess
+   --  / posix_spawn directly and avoids the shell entirely).
 
    --------------------------------------------------------------------------
    --  I/O redirection
