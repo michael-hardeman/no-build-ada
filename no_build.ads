@@ -122,40 +122,76 @@ package No_Build is
    --  parallel jobs: spawn at most N_Procs commands before Wait_All.
 
    --------------------------------------------------------------------------
-   --  Ada-specific: compile
+   --  Ada compilation
+   --
+   --  Compile_Program and the higher-level Compile / Build_*_Lib helpers all
+   --  drive an Ada compiler described by an Ada_Compiler record.  The active
+   --  compiler defaults to Gnatmake_Compiler; call Set_Compiler with a
+   --  different descriptor to target ObjectAda, Janus, or any other Ada
+   --  toolchain that accepts a source file plus an output-name flag, an
+   --  object-directory flag, and a compile-only flag.
    --------------------------------------------------------------------------
+
+   type Ada_Compiler is record
+      Executable        : String_Access;  --  e.g. "gnatmake"
+      Obj_Flag          : String_Access;  --  flag selecting the object dir
+      Out_Flag          : String_Access;  --  flag selecting the output binary
+      Compile_Only_Flag : String_Access;  --  flag suppressing the link step
+   end record;
+
+   Gnatmake_Compiler : constant Ada_Compiler :=
+     (Executable        => new String'("gnatmake"),
+      Obj_Flag          => new String'("-D"),
+      Out_Flag          => new String'("-o"),
+      Compile_Only_Flag => new String'("-c"));
+   --  Default compiler descriptor; matches the GNAT toolchain.
+
+   procedure Set_Compiler (C : Ada_Compiler);
+   --  Replace the active compiler descriptor.  Subsequent calls to
+   --  Compile_Program, Compile, Build_Static_Lib, Build_Shared_Lib, and
+   --  Go_Rebuild_Urself use C until another Set_Compiler call replaces it.
+
+   procedure Compile_Program
+     (Source  : String;
+      Output  : String        := "";
+      Obj_Dir : String        := "";
+      Extra   : Argument_List := (1 .. 0 => null));
+   --  Compile and link Source using the active compiler.  When Output is
+   --  empty the compiler chooses the binary name; when Obj_Dir is empty
+   --  objects land in the current directory.
 
    procedure Compile
      (Source  : String;
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null));
-   --  Compile Source and its dependencies without linking (-c).
-   --  Produces .o and .ali files only.
+   --  Compile Source and its dependencies without linking (uses the active
+   --  compiler's Compile_Only_Flag).  Produces .o (and .ali) files only.
 
    procedure Build_Static_Lib
      (Src_Dir : String;
       Output  : String;
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null));
-   --  Compile every .adb in Src_Dir with -c, then archive the objects into
-   --  a static library at Output (e.g. "lib/libfoo.a") using ar(1).
+   --  Compile every .adb in Src_Dir (compile-only), then archive the objects
+   --  into a static library at Output (e.g. "lib/libfoo.a") using ar(1).
 
    procedure Build_Shared_Lib
      (Src_Dir : String;
       Output  : String;
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null));
-   --  Compile every .adb in Src_Dir with -c -fPIC, then link the objects
-   --  into a shared library at Output using gcc -shared (Linux) or
-   --  gcc -dynamiclib (macOS).
+   --  Compile every .adb in Src_Dir with -fPIC (compile-only), then link the
+   --  objects into a shared library at Output using gcc -shared (Linux /
+   --  Windows) or gcc -dynamiclib (macOS).
 
    procedure Gnatmake
      (Source  : String;
       Output  : String        := "";
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null));
-   --  Compile and link Source using gnatmake.
-   --  Renamed to Compile_Program in Phase 4.
+   --  Deprecated: prefer Compile_Program.  Always uses Gnatmake_Compiler
+   --  regardless of the active compiler, so existing build scripts keep
+   --  invoking gnatmake even after Set_Compiler has been called.
 
    --------------------------------------------------------------------------
    --  Path utilities
@@ -266,34 +302,6 @@ package No_Build is
    --  Recursively walk Root in pre-order, calling Func for each entry.
    --  Returning Walk_Skip from Func on a Directory prevents descending into it.
    --  Returning Walk_Stop aborts the entire walk immediately.
-
-   --------------------------------------------------------------------------
-   --  Dynamic loading (user-injectable binding)
-   --
-   --  The default binding uses pragma Import (C, ...) resolving dlopen/dlsym
-   --  against libdl (Linux), libSystem (macOS), or MinGW's libdl (Windows).
-   --  ObjectAda / Janus users on Windows can call Set_DL_Binding before any
-   --  Cmd / Cmd_Async call to supply LoadLibraryA / GetProcAddress instead.
-   --------------------------------------------------------------------------
-
-   type DL_Handle is new System.Address;
-
-   type DL_Open_Func is access function
-     (Path : System.Address; Mode : Integer) return DL_Handle;
-   pragma Convention (C, DL_Open_Func);
-
-   type DL_Sym_Func is access function
-     (Handle : DL_Handle; Symbol : System.Address) return System.Address;
-   pragma Convention (C, DL_Sym_Func);
-
-   type DL_Binding is record
-      DL_Open : DL_Open_Func;
-      DL_Sym  : DL_Sym_Func;
-   end record;
-
-   procedure Set_DL_Binding (Binding : DL_Binding);
-   --  Override the default dlopen/dlsym binding.  Must be called before the
-   --  first Cmd, Cmd_Async, or Go_Rebuild_Urself call.
 
    --------------------------------------------------------------------------
    --  Logging

@@ -21,7 +21,15 @@ package body No_Build is
    --------------------------------------------------------------------------
    --  dlopen / dlsym — the only two pragma Import (C, ...) in this package.
    --  Everything else is loaded at runtime through these two functions.
+   --
+   --  On Linux (glibc >= 2.34) and macOS these resolve against libc /
+   --  libSystem automatically.  On Windows the user must supply a shim that
+   --  exports `dlopen` and `dlsym` on top of LoadLibraryA / GetProcAddress
+   --  and `with`s it from build.adb so the linker pulls it in.  See the
+   --  Windows section of the README for the stock shim.
    --------------------------------------------------------------------------
+
+   type DL_Handle is new System.Address;
 
    function Default_DL_Open
      (Path : System.Address; Mode : Integer) return DL_Handle;
@@ -30,20 +38,6 @@ package body No_Build is
    function Default_DL_Sym
      (Handle : DL_Handle; Symbol : System.Address) return System.Address;
    pragma Import (C, Default_DL_Sym, "dlsym");
-
-   pragma Linker_Options ("-ldl");
-   --  Required on glibc < 2.34 where dlopen lives in libdl.so.2.
-   --  On glibc >= 2.34, macOS, and MinGW this is harmless (already linked
-   --  or silently ignored).
-
-   Active_DL : DL_Binding :=
-     (DL_Open => Default_DL_Open'Access,
-      DL_Sym  => Default_DL_Sym'Access);
-
-   procedure Set_DL_Binding (Binding : DL_Binding) is
-   begin
-      Active_DL := Binding;
-   end Set_DL_Binding;
 
    --------------------------------------------------------------------------
    --  C helper: convert an Ada String to a null-terminated C string on the
@@ -58,7 +52,7 @@ package body No_Build is
         Interfaces.C.Strings.New_String (Name);
       Result : System.Address;
    begin
-      Result := Active_DL.DL_Sym (Handle, To_Address (C_Name));
+      Result := Default_DL_Sym (Handle, To_Address (C_Name));
       Interfaces.C.Strings.Free (C_Name);
       return Result;
    end Sym;
@@ -137,7 +131,7 @@ package body No_Build is
    begin
       --  dlopen(NULL, RTLD_LAZY) opens the main process image, exposing
       --  all libc symbols that are already linked in.
-      Lib := Active_DL.DL_Open (System.Null_Address, 1);
+      Lib := Default_DL_Open (System.Null_Address, 1);
 
       C_Fork    := To_Fork    (Sym (Lib, "fork"));
       C_Execv   := To_Execv   (Sym (Lib, "execv"));
@@ -594,6 +588,46 @@ package body No_Build is
    end N_Procs;
 
    --------------------------------------------------------------------------
+   --  Compiler abstraction
+   --------------------------------------------------------------------------
+
+   Active_Compiler : Ada_Compiler := Gnatmake_Compiler;
+
+   procedure Set_Compiler (C : Ada_Compiler) is
+   begin
+      Active_Compiler := C;
+   end Set_Compiler;
+
+   procedure Compile_Program
+     (Source  : String;
+      Output  : String        := "";
+      Obj_Dir : String        := "";
+      Extra   : Argument_List := (1 .. 0 => null))
+   is
+      C : Ada_Compiler renames Active_Compiler;
+   begin
+      if Obj_Dir /= "" then
+         Make_Dirs (Obj_Dir);
+      end if;
+
+      if Output = "" and then Obj_Dir = "" then
+         Cmd (C.Executable.all,
+              Argument_List'(1 => S (Source)) & Extra);
+      elsif Output = "" then
+         Cmd (C.Executable.all,
+              Argument_List'(S (Source), C.Obj_Flag, S (Obj_Dir)) & Extra);
+      elsif Obj_Dir = "" then
+         Cmd (C.Executable.all,
+              Argument_List'(S (Source), C.Out_Flag, S (Output)) & Extra);
+      else
+         Cmd (C.Executable.all,
+              Argument_List'(S (Source),
+                             C.Obj_Flag, S (Obj_Dir),
+                             C.Out_Flag, S (Output)) & Extra);
+      end if;
+   end Compile_Program;
+
+   --------------------------------------------------------------------------
    --  Compile (compile-only, no link)
    --------------------------------------------------------------------------
 
@@ -603,8 +637,10 @@ package body No_Build is
       Extra   : Argument_List := (1 .. 0 => null))
    is
    begin
-      Gnatmake (Source, Obj_Dir => Obj_Dir,
-                Extra => Argument_List'(1 => S ("-c")) & Extra);
+      Compile_Program
+        (Source, Obj_Dir => Obj_Dir,
+         Extra => Argument_List'(1 => Active_Compiler.Compile_Only_Flag)
+                  & Extra);
    end Compile;
 
    --------------------------------------------------------------------------
@@ -698,7 +734,7 @@ package body No_Build is
    end Build_Shared_Lib;
 
    --------------------------------------------------------------------------
-   --  Gnatmake
+   --  Gnatmake (deprecated alias — always uses Gnatmake_Compiler)
    --------------------------------------------------------------------------
 
    procedure Gnatmake
@@ -707,24 +743,17 @@ package body No_Build is
       Obj_Dir : String        := "";
       Extra   : Argument_List := (1 .. 0 => null))
    is
+      Saved : constant Ada_Compiler := Active_Compiler;
    begin
-      if Obj_Dir /= "" then
-         Make_Dirs (Obj_Dir);
-      end if;
-
-      if Output = "" and then Obj_Dir = "" then
-         Cmd ("gnatmake", Argument_List'(1 => S (Source)) & Extra);
-      elsif Output = "" then
-         Cmd ("gnatmake",
-              Argument_List'(S (Source), S ("-D"), S (Obj_Dir)) & Extra);
-      elsif Obj_Dir = "" then
-         Cmd ("gnatmake",
-              Argument_List'(S (Source), S ("-o"), S (Output)) & Extra);
-      else
-         Cmd ("gnatmake",
-              Argument_List'(S (Source), S ("-D"), S (Obj_Dir),
-                             S ("-o"), S (Output)) & Extra);
-      end if;
+      Active_Compiler := Gnatmake_Compiler;
+      begin
+         Compile_Program (Source, Output, Obj_Dir, Extra);
+      exception
+         when others =>
+            Active_Compiler := Saved;
+            raise;
+      end;
+      Active_Compiler := Saved;
    end Gnatmake;
 
    --------------------------------------------------------------------------
@@ -1106,8 +1135,8 @@ package body No_Build is
          end if;
 
          begin
-            Gnatmake (Source_Path, Output => Binary_Path,
-                      Obj_Dir => Obj_Dir, Extra => Extra);
+            Compile_Program (Source_Path, Output => Binary_Path,
+                             Obj_Dir => Obj_Dir, Extra => Extra);
          exception
             when others =>
                if Path_Exists (Old_Binary) then

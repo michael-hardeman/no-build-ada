@@ -123,7 +123,7 @@ in the `File_Kind` enumeration for API compatibility but is documented as never
 returned by this implementation.  Any user who needs symlink discrimination on
 a specific platform can wrap the Walk callback with a platform-specific check.
 
-### 6. Process management — user-injectable dlopen/dlsym binding
+### 6. Process management — dlopen/dlsym
 
 This is the hardest part.  `fork`+`execv`+`waitpid` do not exist on Windows.
 `CreateProcessA`+`WaitForSingleObject` do not exist on POSIX.  A single Ada
@@ -134,70 +134,45 @@ without a C preprocessor or separate platform bodies.
 other OS function through them at runtime as function-pointer-typed
 `System.Address` values converted with `Ada.Unchecked_Conversion`.
 
-The dlopen/dlsym pair is itself exposed as a user-overridable binding:
+The only two `pragma Import (C, ...)` declarations in the package body are:
 
 ```ada
-type DL_Open_Func is access function
-  (Path : System.Address; Mode : Integer) return DL_Handle;
-pragma Convention (C, DL_Open_Func);
-
-type DL_Sym_Func is access function
-  (Handle : DL_Handle; Symbol : System.Address) return System.Address;
-pragma Convention (C, DL_Sym_Func);
-
-type DL_Binding is record
-   DL_Open : DL_Open_Func;
-   DL_Sym  : DL_Sym_Func;
-end record;
-
-procedure Set_DL_Binding (Binding : DL_Binding);
---  Override before the first Cmd/Cmd_Async call.
---  The default binding uses pragma Import (C, ...) resolving against
---  libdl (Linux/macOS) or MinGW's libdl wrapper (Windows/GNAT).
-```
-
-This lets ObjectAda and Janus users on Windows supply a binding built on top
-of `LoadLibraryA`/`GetProcAddress` from kernel32.dll, without modifying
-No_Build's source.  A ready-made Windows binding (≤ 30 lines of Ada) will be
-provided in `docs/windows_dl_binding.md` and called out in the README.
-
-`dlopen` and `dlsym` are available on all three target platforms under GNAT:
-- **Linux**: `libdl` (glibc 2.34+: part of libc itself; older: `-ldl`)
-- **macOS**: `libSystem.dylib` (always linked)
-- **Windows/MinGW-w64**: MinGW ships `libdl.a`, a thin wrapper over
-  `LoadLibraryA`/`GetProcAddress`; `dlopen`/`dlsym` resolve correctly.
-
-```ada
---  The only two pragma Imports needed for process management:
 type DL_Handle is new System.Address;
 
-function DL_Open (Path : Interfaces.C.Strings.chars_ptr;
-                  Mode : Interfaces.C.int) return DL_Handle;
-pragma Import (C, DL_Open, "dlopen");
+function Default_DL_Open
+  (Path : System.Address; Mode : Integer) return DL_Handle;
+pragma Import (C, Default_DL_Open, "dlopen");
 
-function DL_Sym  (Handle : DL_Handle;
-                  Symbol : Interfaces.C.Strings.chars_ptr)
-   return System.Address;
-pragma Import (C, DL_Sym, "dlsym");
+function Default_DL_Sym
+  (Handle : DL_Handle; Symbol : System.Address) return System.Address;
+pragma Import (C, Default_DL_Sym, "dlsym");
 ```
 
-At elaboration time, after `Detect_Platform` runs:
+These are resolved at link time:
+- **Linux** (glibc ≥ 2.34): `dlopen` / `dlsym` are in libc itself.
+- **macOS**: `dlopen` / `dlsym` are in libSystem (always linked).
+- **Windows**: no standard C library provides these symbols.  The user must
+  supply a shim — `windows_dl.adb` — that exports `dlopen` and `dlsym` via
+  `pragma Export (C, ...)`, implemented over `LoadLibraryA` /
+  `GetProcAddress`, and `with`s it from `build.adb` so the linker pulls it
+  into the executable.  The stock shim is in the README's Windows section.
+
+Older toolchains (glibc < 2.34, non-MinGW Windows compilers without their
+own libdl wrapper) are not supported.  No `pragma Linker_Options` is used.
+
+At elaboration time:
 
 ```ada
 --  POSIX path (Linux + macOS)
 --    dlopen(NULL, RTLD_LAZY) opens the already-loaded process image,
 --    giving access to all libc symbols.
 Posix_Lib : constant DL_Handle :=
-   DL_Open (Interfaces.C.Strings.Null_Ptr, 1);  --  RTLD_LAZY = 1 everywhere
-
---  Windows path
---    MinGW's dlopen wraps LoadLibraryA; kernel32.dll is always present.
-Win_Lib : constant DL_Handle :=
-   DL_Open (New_String ("kernel32.dll"), 1);
+   Default_DL_Open (System.Null_Address, 1);  --  RTLD_LAZY = 1
 ```
 
-Each OS function is then loaded once via `DL_Sym` and stored as a procedure
-or function access type, obtained through `Ada.Unchecked_Conversion`:
+Each OS function is then loaded once via `Default_DL_Sym` and stored as a
+procedure or function access type, obtained through
+`Ada.Unchecked_Conversion`:
 
 ```ada
 --  Example: fork
@@ -349,8 +324,8 @@ are updated to use `Compile_Program` via `Active_Compiler`.
 - Remove `with GNAT.OS_Lib` from both files — confirm clean compile with
   GNAT using `-gnatX0` to surface any residual GNAT-isms.
 - Verify on macOS arm64 and x86-64.
-- Update CLAUDE.md and README (add macOS bootstrap section, note `-ldl` on
-  old glibc).
+- Update CLAUDE.md and README (add macOS bootstrap section, document
+  Windows shim).
 
 ---
 
@@ -379,22 +354,17 @@ No other public API symbols are removed or renamed.
    `dlopen(NULL, RTLD_LAZY)` suffices or whether we must pass
    `dlopen("libSystem.dylib", RTLD_LAZY)` on macOS specifically.
 
-2. **`-ldl` on old glibc**: On glibc < 2.34, `dlopen` is in `libdl.so.2`,
-   not in libc.  GNAT's own RTS already links `-ldl` on these systems for its
-   tasking support, so it likely resolves automatically.  Verify and add a
-   `pragma Linker_Options ("-ldl")` guarded behind a comment if needed.
-
-3. **`Compile_Program` and `Go_Rebuild_Urself`**: When the build script
+2. **`Compile_Program` and `Go_Rebuild_Urself`**: When the build script
    recompiles itself, `Go_Rebuild_Urself` uses `Active_Compiler`.  If the
    user changed the active compiler before calling `Go_Rebuild_Urself`, the
    self-rebuild uses that compiler — which may or may not be intentional.
    Consider a dedicated `Bootstrap_Compiler` parameter.
 
-4. **Thread safety of `Active_Compiler`**: Package-level variable.  Add a
+3. **Thread safety of `Active_Compiler`**: Package-level variable.  Add a
    protected object if concurrent calls to `Set_Compiler` ever become a
    concern.
 
-5. **Windows console inheritance**: `CreateProcessA` with
+4. **Windows console inheritance**: `CreateProcessA` with
    `bInheritHandles = TRUE` and no `STARTUPINFO` flag override will inherit
    the parent's console.  Verify that stdout/stderr pass through correctly
    in the default (non-redirected) case.
