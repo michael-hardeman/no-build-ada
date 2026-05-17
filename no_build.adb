@@ -143,6 +143,174 @@ package body No_Build is
    end Load_Posix_Symbols;
 
    --------------------------------------------------------------------------
+   --  Win32 process function pointer types (loaded via dlsym at elaboration
+   --  on Windows).  kernel32.dll exports CreateProcessA / WaitForSingleObject
+   --  / GetExitCodeProcess / CloseHandle / CreateFileA / GetStdHandle /
+   --  ExitProcess — fork()/execv()/waitpid() do not exist on native Win32,
+   --  so we use the Win32 process API instead.
+   --------------------------------------------------------------------------
+
+   subtype Win_DWORD is Interfaces.C.unsigned;
+   subtype Win_WORD  is Interfaces.C.unsigned_short;
+   subtype Win_BOOL  is Interfaces.C.int;
+
+   Win_TRUE                  : constant Win_BOOL  := 1;
+   Win_STARTF_USESTDHANDLES  : constant Win_DWORD := 16#0000_0100#;
+   Win_INFINITE              : constant Win_DWORD := 16#FFFF_FFFF#;
+   --  GetStdHandle ids are negative DWORDs (-10/-11/-12 as unsigned).
+   Win_STD_INPUT_HANDLE      : constant Win_DWORD := 16#FFFF_FFF6#;
+   Win_STD_OUTPUT_HANDLE     : constant Win_DWORD := 16#FFFF_FFF5#;
+   Win_STD_ERROR_HANDLE      : constant Win_DWORD := 16#FFFF_FFF4#;
+   Win_GENERIC_WRITE         : constant Win_DWORD := 16#4000_0000#;
+   Win_FILE_SHARE_READ       : constant Win_DWORD := 16#0000_0001#;
+   Win_FILE_SHARE_WRITE      : constant Win_DWORD := 16#0000_0002#;
+   Win_CREATE_ALWAYS         : constant Win_DWORD := 2;
+   Win_FILE_ATTRIBUTE_NORMAL : constant Win_DWORD := 16#0000_0080#;
+
+   type Win_Startup_Info is record
+      Cb              : Win_DWORD      := 0;
+      Reserved        : System.Address := System.Null_Address;
+      Desktop         : System.Address := System.Null_Address;
+      Title           : System.Address := System.Null_Address;
+      X               : Win_DWORD      := 0;
+      Y               : Win_DWORD      := 0;
+      X_Size          : Win_DWORD      := 0;
+      Y_Size          : Win_DWORD      := 0;
+      X_Count_Chars   : Win_DWORD      := 0;
+      Y_Count_Chars   : Win_DWORD      := 0;
+      Fill_Attribute  : Win_DWORD      := 0;
+      Flags           : Win_DWORD      := 0;
+      Show_Window     : Win_WORD       := 0;
+      Cb_Reserved2    : Win_WORD       := 0;
+      Reserved2       : System.Address := System.Null_Address;
+      H_Std_Input     : System.Address := System.Null_Address;
+      H_Std_Output    : System.Address := System.Null_Address;
+      H_Std_Error     : System.Address := System.Null_Address;
+   end record;
+   pragma Convention (C, Win_Startup_Info);
+
+   type Win_Process_Info is record
+      H_Process  : System.Address := System.Null_Address;
+      H_Thread   : System.Address := System.Null_Address;
+      Process_Id : Win_DWORD      := 0;
+      Thread_Id  : Win_DWORD      := 0;
+   end record;
+   pragma Convention (C, Win_Process_Info);
+
+   type Win_Security_Attrs is record
+      Length     : Win_DWORD      := 0;
+      Descriptor : System.Address := System.Null_Address;
+      Inherit    : Win_BOOL       := 0;
+   end record;
+   pragma Convention (C, Win_Security_Attrs);
+
+   type CreateProcess_Func is access function
+     (App_Name        : System.Address;
+      Cmd_Line        : System.Address;
+      Proc_Attrs      : System.Address;
+      Thread_Attrs    : System.Address;
+      Inherit_Handles : Win_BOOL;
+      Creation_Flags  : Win_DWORD;
+      Environment     : System.Address;
+      Current_Dir     : System.Address;
+      Startup_Info    : System.Address;
+      Process_Info    : System.Address) return Win_BOOL;
+   pragma Convention (Stdcall, CreateProcess_Func);
+
+   type WaitForSingleObject_Func is access function
+     (Handle       : System.Address;
+      Milliseconds : Win_DWORD) return Win_DWORD;
+   pragma Convention (Stdcall, WaitForSingleObject_Func);
+
+   type GetExitCodeProcess_Func is access function
+     (Process   : System.Address;
+      Exit_Code : access Win_DWORD) return Win_BOOL;
+   pragma Convention (Stdcall, GetExitCodeProcess_Func);
+
+   type CloseHandle_Func is access function
+     (Handle : System.Address) return Win_BOOL;
+   pragma Convention (Stdcall, CloseHandle_Func);
+
+   type CreateFile_Func is access function
+     (File_Name      : System.Address;
+      Desired_Access : Win_DWORD;
+      Share_Mode     : Win_DWORD;
+      Security_Attrs : System.Address;
+      Creation_Disp  : Win_DWORD;
+      Flags_Attrs    : Win_DWORD;
+      Template_File  : System.Address) return System.Address;
+   pragma Convention (Stdcall, CreateFile_Func);
+
+   type GetStdHandle_Func is access function
+     (Std_Handle : Win_DWORD) return System.Address;
+   pragma Convention (Stdcall, GetStdHandle_Func);
+
+   type ExitProcess_Func is access procedure (Exit_Code : Win_DWORD);
+   pragma Convention (Stdcall, ExitProcess_Func);
+
+   function To_CreateProcess       is new Ada.Unchecked_Conversion
+     (System.Address, CreateProcess_Func);
+   function To_WaitForSingleObject is new Ada.Unchecked_Conversion
+     (System.Address, WaitForSingleObject_Func);
+   function To_GetExitCodeProcess  is new Ada.Unchecked_Conversion
+     (System.Address, GetExitCodeProcess_Func);
+   function To_CloseHandle         is new Ada.Unchecked_Conversion
+     (System.Address, CloseHandle_Func);
+   function To_CreateFile          is new Ada.Unchecked_Conversion
+     (System.Address, CreateFile_Func);
+   function To_GetStdHandle        is new Ada.Unchecked_Conversion
+     (System.Address, GetStdHandle_Func);
+   function To_ExitProcess         is new Ada.Unchecked_Conversion
+     (System.Address, ExitProcess_Func);
+
+   W_CreateProcess       : CreateProcess_Func       := null;
+   W_WaitForSingleObject : WaitForSingleObject_Func := null;
+   W_GetExitCodeProcess  : GetExitCodeProcess_Func  := null;
+   W_CloseHandle         : CloseHandle_Func         := null;
+   W_CreateFile          : CreateFile_Func          := null;
+   W_GetStdHandle        : GetStdHandle_Func        := null;
+   W_ExitProcess         : ExitProcess_Func         := null;
+
+   procedure Load_Win32_Symbols is
+      use Interfaces.C.Strings;
+      Name : chars_ptr := New_String ("kernel32.dll");
+      Lib  : DL_Handle;
+   begin
+      Lib := Default_DL_Open (To_Address (Name), 0);
+      Free (Name);
+      if System.Address (Lib) = System.Null_Address then
+         raise Build_Error with "failed to load kernel32.dll";
+      end if;
+
+      W_CreateProcess       :=
+        To_CreateProcess       (Sym (Lib, "CreateProcessA"));
+      W_WaitForSingleObject :=
+        To_WaitForSingleObject (Sym (Lib, "WaitForSingleObject"));
+      W_GetExitCodeProcess  :=
+        To_GetExitCodeProcess  (Sym (Lib, "GetExitCodeProcess"));
+      W_CloseHandle         :=
+        To_CloseHandle         (Sym (Lib, "CloseHandle"));
+      W_CreateFile          :=
+        To_CreateFile          (Sym (Lib, "CreateFileA"));
+      W_GetStdHandle        :=
+        To_GetStdHandle        (Sym (Lib, "GetStdHandle"));
+      W_ExitProcess         :=
+        To_ExitProcess         (Sym (Lib, "ExitProcess"));
+
+      if W_CreateProcess = null
+        or else W_WaitForSingleObject = null
+        or else W_GetExitCodeProcess = null
+        or else W_CloseHandle = null
+        or else W_CreateFile = null
+        or else W_GetStdHandle = null
+        or else W_ExitProcess = null
+      then
+         raise Build_Error
+           with "failed to resolve kernel32.dll symbols";
+      end if;
+   end Load_Win32_Symbols;
+
+   --------------------------------------------------------------------------
    --  Logging
    --------------------------------------------------------------------------
 
@@ -480,6 +648,228 @@ package body No_Build is
    end Posix_Wait;
 
    --------------------------------------------------------------------------
+   --  Internal helpers: Win32 process spawn via CreateProcessA
+   --------------------------------------------------------------------------
+
+   --  Quote a single argument per CommandLineToArgvW's reverse parsing rules
+   --  (2n backslashes + " -> n backslashes ending a quoted run; 2n+1 ->
+   --  n backslashes plus literal "; trailing backslashes inside quotes get
+   --  doubled).  Appends to B.
+   procedure Win32_Append_Arg
+     (B : in out Ada.Strings.Unbounded.Unbounded_String; Arg : String)
+   is
+      use Ada.Strings.Unbounded;
+      Needs_Quote : Boolean := Arg'Length = 0;
+   begin
+      for C of Arg loop
+         if C = ' ' or else C = ASCII.HT or else C = '"' then
+            Needs_Quote := True;
+            exit;
+         end if;
+      end loop;
+
+      if not Needs_Quote then
+         Append (B, Arg);
+         return;
+      end if;
+
+      Append (B, '"');
+      declare
+         I        : Positive := Arg'First;
+         BS_Count : Natural;
+      begin
+         while I <= Arg'Last loop
+            BS_Count := 0;
+            while I <= Arg'Last and then Arg (I) = '\' loop
+               BS_Count := BS_Count + 1;
+               I        := I + 1;
+            end loop;
+
+            if I > Arg'Last then
+               for K in 1 .. 2 * BS_Count loop
+                  Append (B, '\');
+               end loop;
+            elsif Arg (I) = '"' then
+               for K in 1 .. 2 * BS_Count + 1 loop
+                  Append (B, '\');
+               end loop;
+               Append (B, '"');
+               I := I + 1;
+            else
+               for K in 1 .. BS_Count loop
+                  Append (B, '\');
+               end loop;
+               Append (B, Arg (I));
+               I := I + 1;
+            end if;
+         end loop;
+      end;
+      Append (B, '"');
+   end Win32_Append_Arg;
+
+   function Build_Command_Line
+     (Prog_Path : String;
+      Args      : Argument_List) return String
+   is
+      use Ada.Strings.Unbounded;
+      B : Unbounded_String;
+   begin
+      Win32_Append_Arg (B, Prog_Path);
+      for A of Args loop
+         if A /= null then
+            Append (B, ' ');
+            Win32_Append_Arg (B, A.all);
+         end if;
+      end loop;
+      return To_String (B);
+   end Build_Command_Line;
+
+   --  Open a file for the child's stdout/stderr.  Returns an inheritable
+   --  handle suitable for placing in STARTUPINFO; raises Build_Error on
+   --  failure.
+   function Win32_Open_For_Redirect (Path : String) return System.Address is
+      use Interfaces.C.Strings;
+      use System.Storage_Elements;
+      use type Interfaces.C.unsigned;
+      C_Path : chars_ptr := New_String (Path);
+      SA     : aliased Win_Security_Attrs :=
+        (Length     => Win_DWORD
+                         (Win_Security_Attrs'Object_Size
+                          / System.Storage_Unit),
+         Descriptor => System.Null_Address,
+         Inherit    => Win_TRUE);
+      --  INVALID_HANDLE_VALUE == (HANDLE)(-1); 'Last gives the all-ones
+      --  bit pattern at whatever word size we're on.
+      Invalid : constant System.Address := To_Address (Integer_Address'Last);
+      H       : System.Address;
+   begin
+      H := W_CreateFile
+             (To_Address (C_Path),
+              Win_GENERIC_WRITE,
+              Win_FILE_SHARE_READ + Win_FILE_SHARE_WRITE,
+              SA'Address,
+              Win_CREATE_ALWAYS,
+              Win_FILE_ATTRIBUTE_NORMAL,
+              System.Null_Address);
+      Free (C_Path);
+      if H = Invalid then
+         raise Build_Error with "CreateFile failed for: " & Path;
+      end if;
+      return H;
+   end Win32_Open_For_Redirect;
+
+   --  Spawn a child via CreateProcessA.  Mirrors Posix_Spawn's contract:
+   --  returns the process handle (for async waits) when Wait_For_Exit is
+   --  False; otherwise waits, raises Build_Error on non-zero exit, and
+   --  returns Null_Address.
+   function Win32_Spawn
+     (Prog_Path     : String;
+      Args          : Argument_List;
+      Stdout_File   : String_Access;
+      Stderr_File   : String_Access;
+      Wait_For_Exit : Boolean) return System.Address
+   is
+      use Interfaces.C.Strings;
+      use type Interfaces.C.int;
+      use type Interfaces.C.unsigned;
+      Cmd_Line  : constant String := Build_Command_Line (Prog_Path, Args);
+      C_Prog    : chars_ptr := New_String (Prog_Path);
+      C_Cmd     : chars_ptr := New_String (Cmd_Line);
+      SI        : aliased Win_Startup_Info;
+      PI        : aliased Win_Process_Info;
+      Ok        : Win_BOOL;
+      Exit_Code : aliased Win_DWORD := 0;
+      Dummy_W   : Win_DWORD;
+      Dummy_B   : Win_BOOL;
+      Owned_Out : Boolean := False;
+      Owned_Err : Boolean := False;
+   begin
+      SI.Cb :=
+        Win_DWORD (Win_Startup_Info'Object_Size / System.Storage_Unit);
+      SI.Flags       := Win_STARTF_USESTDHANDLES;
+      SI.H_Std_Input := W_GetStdHandle (Win_STD_INPUT_HANDLE);
+
+      if Stdout_File /= null then
+         SI.H_Std_Output := Win32_Open_For_Redirect (Stdout_File.all);
+         Owned_Out := True;
+      else
+         SI.H_Std_Output := W_GetStdHandle (Win_STD_OUTPUT_HANDLE);
+      end if;
+
+      if Stderr_File /= null then
+         SI.H_Std_Error := Win32_Open_For_Redirect (Stderr_File.all);
+         Owned_Err := True;
+      else
+         SI.H_Std_Error := W_GetStdHandle (Win_STD_ERROR_HANDLE);
+      end if;
+
+      Ok := W_CreateProcess
+              (App_Name        => To_Address (C_Prog),
+               Cmd_Line        => To_Address (C_Cmd),
+               Proc_Attrs      => System.Null_Address,
+               Thread_Attrs    => System.Null_Address,
+               Inherit_Handles => Win_TRUE,
+               Creation_Flags  => 0,
+               Environment     => System.Null_Address,
+               Current_Dir     => System.Null_Address,
+               Startup_Info    => SI'Address,
+               Process_Info    => PI'Address);
+
+      --  Parent no longer needs the redirection handles; the child has its
+      --  own copies after CreateProcess.
+      if Owned_Out then
+         Dummy_B := W_CloseHandle (SI.H_Std_Output);
+      end if;
+      if Owned_Err then
+         Dummy_B := W_CloseHandle (SI.H_Std_Error);
+      end if;
+
+      Free (C_Prog);
+      Free (C_Cmd);
+
+      if Ok = 0 then
+         Log ("ERRO", "CreateProcess failed for: " & Prog_Path);
+         raise Build_Error with "CreateProcess failed for: " & Prog_Path;
+      end if;
+
+      --  We don't need the main thread handle.
+      Dummy_B := W_CloseHandle (PI.H_Thread);
+
+      if not Wait_For_Exit then
+         return PI.H_Process;
+      end if;
+
+      Dummy_W := W_WaitForSingleObject (PI.H_Process, Win_INFINITE);
+      Dummy_B := W_GetExitCodeProcess (PI.H_Process, Exit_Code'Access);
+      Dummy_B := W_CloseHandle (PI.H_Process);
+
+      if Exit_Code /= 0 then
+         declare
+            Code : constant Integer := Integer (Exit_Code);
+         begin
+            Log ("ERRO", "command exited with status" & Code'Image);
+            raise Build_Error
+              with "command failed (exit" & Code'Image & ")";
+         end;
+      end if;
+
+      return System.Null_Address;
+   end Win32_Spawn;
+
+   --  Wait for a previously-spawned Win32 process handle and return its
+   --  exit code.  Closes the handle.
+   function Win32_Wait (Pid_Addr : System.Address) return Integer is
+      Dummy_W   : Win_DWORD;
+      Dummy_B   : Win_BOOL;
+      Exit_Code : aliased Win_DWORD := 0;
+   begin
+      Dummy_W := W_WaitForSingleObject (Pid_Addr, Win_INFINITE);
+      Dummy_B := W_GetExitCodeProcess (Pid_Addr, Exit_Code'Access);
+      Dummy_B := W_CloseHandle (Pid_Addr);
+      return Integer (Exit_Code);
+   end Win32_Wait;
+
+   --------------------------------------------------------------------------
    --  Command execution (public API)
    --------------------------------------------------------------------------
 
@@ -492,11 +882,20 @@ package body No_Build is
       Prog_Path : constant String := Resolve_Program (Program, Display);
       Dummy     : System.Address;
    begin
-      Dummy := Posix_Spawn
-        (Prog_Path, Args,
-         Stdout_File   => Redir.Stdout,
-         Stderr_File   => Redir.Stderr,
-         Wait_For_Exit => True);
+      case Platform is
+         when Linux | MacOS =>
+            Dummy := Posix_Spawn
+              (Prog_Path, Args,
+               Stdout_File   => Redir.Stdout,
+               Stderr_File   => Redir.Stderr,
+               Wait_For_Exit => True);
+         when Windows =>
+            Dummy := Win32_Spawn
+              (Prog_Path, Args,
+               Stdout_File   => Redir.Stdout,
+               Stderr_File   => Redir.Stderr,
+               Wait_For_Exit => True);
+      end case;
    end Cmd;
 
    function Cmd_Async
@@ -508,11 +907,20 @@ package body No_Build is
       Prog_Path : constant String := Resolve_Program (Program, Display);
       Pid_Addr  : System.Address;
    begin
-      Pid_Addr := Posix_Spawn
-        (Prog_Path, Args,
-         Stdout_File   => Redir.Stdout,
-         Stderr_File   => Redir.Stderr,
-         Wait_For_Exit => False);
+      case Platform is
+         when Linux | MacOS =>
+            Pid_Addr := Posix_Spawn
+              (Prog_Path, Args,
+               Stdout_File   => Redir.Stdout,
+               Stderr_File   => Redir.Stderr,
+               Wait_For_Exit => False);
+         when Windows =>
+            Pid_Addr := Win32_Spawn
+              (Prog_Path, Args,
+               Stdout_File   => Redir.Stdout,
+               Stderr_File   => Redir.Stderr,
+               Wait_For_Exit => False);
+      end case;
       return (Pid => Pid_Addr);
    end Cmd_Async;
 
@@ -522,8 +930,16 @@ package body No_Build is
       return Cmd_Async (Program, Empty);
    end Cmd_Async;
 
+   function Wait_For (Pid : System.Address) return Integer is
+   begin
+      case Platform is
+         when Linux | MacOS => return Posix_Wait (Pid);
+         when Windows       => return Win32_Wait (Pid);
+      end case;
+   end Wait_For;
+
    procedure Wait (P : Proc) is
-      Code : constant Integer := Posix_Wait (P.Pid);
+      Code : constant Integer := Wait_For (P.Pid);
    begin
       if Code /= 0 then
          raise Build_Error with "process exited with non-zero status";
@@ -545,7 +961,7 @@ package body No_Build is
       for I in 1 .. List.Count loop
          if List.Items (I).Pid /= System.Null_Address then
             declare
-               Code : constant Integer := Posix_Wait (List.Items (I).Pid);
+               Code : constant Integer := Wait_For (List.Items (I).Pid);
             begin
                if Code /= 0 then
                   Any_Failed := True;
@@ -1108,23 +1524,36 @@ package body No_Build is
             declare
                Dummy : System.Address;
             begin
-               Dummy := Posix_Spawn
-                 (Binary_Path, Args,
-                  Stdout_File   => null,
-                  Stderr_File   => null,
-                  Wait_For_Exit => True);
+               case Platform is
+                  when Linux | MacOS =>
+                     Dummy := Posix_Spawn
+                       (Binary_Path, Args,
+                        Stdout_File   => null,
+                        Stderr_File   => null,
+                        Wait_For_Exit => True);
+                     --  Exit this (old) process; the re-execed build ran.
+                     C_Exit (0);
+                  when Windows =>
+                     Dummy := Win32_Spawn
+                       (Binary_Path, Args,
+                        Stdout_File   => null,
+                        Stderr_File   => null,
+                        Wait_For_Exit => True);
+                     W_ExitProcess (0);
+               end case;
             end;
-            --  If the re-executed build succeeded, exit this (old) process.
-            C_Exit (0);
          end;
       end if;
    end Go_Rebuild_Urself;
 
 begin
-   --  Load POSIX process-management symbols at elaboration time.
-   --  This runs after Detect_Platform (which initializes the Platform constant
-   --  in the spec), so we know which platform we're on.
-   if Platform /= Windows then
-      Load_Posix_Symbols;
-   end if;
+   --  Load platform-appropriate process-management symbols at elaboration
+   --  time.  This runs after Detect_Platform (which initializes the Platform
+   --  constant in the spec), so we know which platform we're on.
+   case Platform is
+      when Linux | MacOS =>
+         Load_Posix_Symbols;
+      when Windows =>
+         Load_Win32_Symbols;
+   end case;
 end No_Build;
