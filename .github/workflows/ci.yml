@@ -72,17 +72,26 @@ jobs:
           update: true
           install: mingw-w64-x86_64-gcc-ada
 
-      # We bypass bootstrap.cmd here so we can pass -largs -ldl, which
-      # is what MinGW's libdl wrapper needs to satisfy the dlopen/dlsym
-      # references in no_build.adb when the Windows_DL shim isn't linked.
+      # MinGW on MSYS2 does not ship libdl, so the option-2 path
+      # (-largs -ldl) doesn't work.  Use the repo's Windows_DL shim
+      # instead, but inject the `with Windows_DL;` into no_build.ads at
+      # CI time so we don't have to ship that with-clause to POSIX users.
+      # `-Iwindows` then lets gnatmake find the shim's compilation unit.
+      - name: Inject `with Windows_DL;` into no_build.ads
+        run: |
+          { printf 'with Windows_DL;\npragma Warnings (Off, Windows_DL);\n'; \
+            cat no_build.ads; } > no_build.ads.tmp
+          mv no_build.ads.tmp no_build.ads
+          head -3 no_build.ads
+
       - name: Build and run examples
         run: |
           mkdir -p examples/obj
-          gnatmake -D examples/obj -I. examples/build_all.adb -o examples/build_all -largs -ldl
+          gnatmake -D examples/obj -I. -Iwindows examples/build_all.adb -o examples/build_all
           ./examples/build_all.exe
 
       - name: Build and run tests
         run: |
           mkdir -p tests/obj
-          gnatmake -D tests/obj -I. -Itests tests/build_tests.adb -o tests/build_tests -largs -ldl
+          gnatmake -D tests/obj -I. -Iwindows -Itests tests/build_tests.adb -o tests/build_tests
           ./tests/build_tests.exe
