@@ -126,6 +126,10 @@ the linker needs to resolve `no_build.adb`'s references to `dlopen` and
 `pragma Warnings (Off, Windows_DL);` (GNAT) or the equivalent in your
 toolchain.
 
+*** === NOTE === ***
+
+In this repo I would add the windows_dl files next to no_build.ads/adb but I would include them in no_build.ads just so I don't have to modify every example
+
 ### Windows + GNAT (MinGW) — two options
 
 GNAT/MinGW on Windows ships a `libdl.a` wrapper around `LoadLibraryA` /
