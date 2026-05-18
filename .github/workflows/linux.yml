@@ -1,0 +1,27 @@
+name: Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GNAT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnat
+
+      - name: Bootstrap and run examples
+        run: |
+          ./bootstrap.sh
+          ./examples/build_all
+
+      - name: Bootstrap and run tests
+        run: |
+          ./bootstrap_tests.sh
+          ./tests/build_tests

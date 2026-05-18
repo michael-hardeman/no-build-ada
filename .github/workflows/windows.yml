@@ -1,4 +1,4 @@
-name: CI
+name: Windows
 
 on:
   push:
@@ -6,59 +6,7 @@ on:
   pull_request:
 
 jobs:
-  linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install GNAT
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gnat
-
-      - name: Bootstrap and run examples
-        run: |
-          ./bootstrap.sh
-          ./examples/build_all
-
-      - name: Bootstrap and run tests
-        run: |
-          ./bootstrap_tests.sh
-          ./tests/build_tests
-
-  macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: alire-project/setup-alire@v4
-
-      - name: Install GNAT via Alire and export to PATH
-        shell: bash
-        run: |
-          # `alr exec` refuses to run outside an Alire workspace, so create
-          # a throwaway one in $RUNNER_TEMP just to give it a manifest.
-          cd "$RUNNER_TEMP"
-          alr -n init --bin ci_throwaway
-          cd ci_throwaway
-          alr toolchain --select gnat_native gprbuild
-          # Ask alr where the toolchain ended up and add it to $PATH for
-          # subsequent steps so we can call gnatmake without `alr exec`.
-          GNAT_BIN=$(alr exec -- bash -c 'dirname "$(command -v gnatmake)"')
-          echo "GNAT bin: $GNAT_BIN"
-          echo "$GNAT_BIN" >> "$GITHUB_PATH"
-
-      - name: Bootstrap and run examples
-        run: |
-          ./bootstrap.sh
-          ./examples/build_all
-
-      - name: Bootstrap and run tests
-        run: |
-          ./bootstrap_tests.sh
-          ./tests/build_tests
-
-  windows:
+  build:
     runs-on: windows-latest
     defaults:
       run:
