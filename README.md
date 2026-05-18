@@ -1,5 +1,9 @@
 # no-build
 
+[![Linux](https://github.com/michael-hardeman/no-build-ada/actions/workflows/ci.yml/badge.svg?branch=main&job=linux)](https://github.com/michael-hardeman/no-build-ada/actions/workflows/ci.yml)
+[![macOS](https://github.com/michael-hardeman/no-build-ada/actions/workflows/ci.yml/badge.svg?branch=main&job=macos)](https://github.com/michael-hardeman/no-build-ada/actions/workflows/ci.yml)
+[![Windows](https://github.com/michael-hardeman/no-build-ada/actions/workflows/ci.yml/badge.svg?branch=main&job=windows)](https://github.com/michael-hardeman/no-build-ada/actions/workflows/ci.yml)
+
 An Ada port of [nob.h](https://github.com/tsoding/nob.h) — a build system
 that lives entirely in your source tree with no Makefiles, no `.gpr` project
 files, and no external tools beyond your Ada compiler.
