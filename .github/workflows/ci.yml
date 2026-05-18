@@ -63,6 +63,12 @@ jobs:
     defaults:
       run:
         shell: msys2 {0}
+    # ADA_INCLUDE_PATH adds windows/ to every gnatmake's source search --
+    # including nested invocations from build_all.exe and build_tests.exe,
+    # which need it because the injected `with Windows_DL;` (see below)
+    # makes every example transitively depend on the shim.
+    env:
+      ADA_INCLUDE_PATH: windows
     steps:
       - uses: actions/checkout@v4
 
