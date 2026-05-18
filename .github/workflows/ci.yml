@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GNAT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnat
+
+      - name: Bootstrap and run examples
+        run: |
+          ./bootstrap.sh
+          ./examples/build_all
+
+      - name: Bootstrap and run tests
+        run: |
+          ./bootstrap_tests.sh
+          ./tests/build_tests
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: alire-project/setup-alire@v4
+
+      - name: Install GNAT via Alire and export to PATH
+        shell: bash
+        run: |
+          alr toolchain --select gnat_native gprbuild
+          # Find the GNAT bin dir Alire installed and add it to PATH for
+          # subsequent steps so we can call gnatmake without `alr exec`.
+          GNAT_BIN=$(alr exec -- bash -c 'dirname $(command -v gnatmake)')
+          echo "$GNAT_BIN" >> "$GITHUB_PATH"
+
+      - name: Bootstrap and run examples
+        run: |
+          ./bootstrap.sh
+          ./examples/build_all
+
+      - name: Bootstrap and run tests
+        run: |
+          ./bootstrap_tests.sh
+          ./tests/build_tests
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc-ada
+
+      # We bypass bootstrap.cmd here so we can pass -largs -ldl, which
+      # is what MinGW's libdl wrapper needs to satisfy the dlopen/dlsym
+      # references in no_build.adb when the Windows_DL shim isn't linked.
+      - name: Build and run examples
+        run: |
+          mkdir -p examples/obj
+          gnatmake -D examples/obj -I. examples/build_all.adb -o examples/build_all -largs -ldl
+          ./examples/build_all.exe
+
+      - name: Build and run tests
+        run: |
+          mkdir -p tests/obj
+          gnatmake -D tests/obj -I. -Itests tests/build_tests.adb -o tests/build_tests -largs -ldl
+          ./tests/build_tests.exe
