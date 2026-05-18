@@ -31,7 +31,8 @@ procedure Build_All is
       if Example = "build_all.adb" then
          return;
       end if;
-      Compile_Program (Examples / Example, Output => Bin,
+      Compile_Program (Examples / Example,
+                       Output  => Bin,
                        Obj_Dir => Obj,
                        Extra   => Argument_List'(S ("-I."), S ("-I" & Lib)));
       Cmd (Bin);
