@@ -58,6 +58,30 @@ begin
 end Build;
 ```
 
+## Argument lists
+
+`Argument_List` is a Controlled, vector-backed container of strings.  It owns
+its strings: deep-copy on assignment, free on scope exit -- no manual
+deallocation, no leak.
+
+```ada
+--  One-shot constructor (1..8 elements).
+Cmd ("gnatmake", Args ("main.adb", "-O2"));
+
+--  Concatenate with & ; mix strings and Argument_Lists freely.
+Cmd ("gnatmake", Args ("main.adb") & "-O2" & Args ("-gnatwa", "-gnata"));
+
+--  Grow dynamically with Append.
+declare
+   Flags : Argument_List;
+begin
+   for Path of Include_Dirs loop
+      Flags.Append ("-I" & Path);
+   end loop;
+   Cmd ("gnatmake", Flags);
+end;
+```
+
 ## Windows support
 
 In order to try and avoid linking errors or separate package we don't
@@ -112,7 +136,7 @@ GNAT/MinGW on Windows ships a `libdl.a` wrapper around `LoadLibraryA` /
      (Binary_Path => "./build",
       Source_Path => "build.adb",
       Obj_Dir     => Obj,
-      Extra       => Argument_List'(S ("-largs"), S ("-ldl")));
+      Extra       => Args ("-largs", "-ldl"));
    ```
 
 The shim is recommended if you care about toolchain portability; `-ldl` is
@@ -206,7 +230,7 @@ procedure Build_All is
       end if;
       Compile_Program (Examples / Example, Output => Bin,
                        Obj_Dir => Obj,
-                       Extra   => Argument_List'(S ("-I."), S ("-I" & Lib)));
+                       Extra   => Args ("-I.", "-I" & Lib));
       Cmd (Bin);
    end Build_And_Run_Example;
 
@@ -214,7 +238,7 @@ begin
    Go_Rebuild_Urself (Binary_Path => "./examples/build_all",
                       Source_Path => "examples/build_all.adb",
                       Obj_Dir     => Obj,
-                      Extra       => Argument_List'(1 => S ("-I.")));
+                      Extra       => Args ("-I."));
 
    Info ("building static library...");
    Build_Static_Lib (Lib, Output => Lib / "libgreet.a", Obj_Dir => Obj);
@@ -232,6 +256,23 @@ begin
    Info ("Done.");
 end Build_All;
 ```
+
+## Tests
+
+The library has a small test suite under `tests/` that exercises path
+utilities, `Argument_List`, `Make_Dirs`, `Is_Newer`/`Needs_Rebuild`,
+`Capture`, `Walk_Dir`, and `Read_File`/`Write_File`.  Each test is its own
+program; `tests/build_tests.adb` is a `No_Build`-based runner that compiles
+and executes every `test_*.adb` and accumulates pass/fail counts.
+
+```sh
+./bootstrap_tests.sh    # Linux/macOS -- one-time gnatmake
+./bootstrap_tests.cmd   # Windows
+./tests/build_tests     # build + run all tests
+```
+
+CI runs the same flow on Linux, macOS, and Windows -- see
+`.github/workflows/ci.yml`.
 
 ## Requirements
 

@@ -1,9 +1,13 @@
---  no_build.ads -- Ada port of https://github.com/tsoding/nob.h.  
+--  no_build.ads -- Ada port of https://github.com/tsoding/nob.h.
 --  See README.md for usage.
 
 with System;
+with Ada.Containers.Indefinite_Vectors;
+with Ada.Containers.Vectors;
 with Ada.Directories;
 with Ada.Environment_Variables;
+with Ada.Finalization;
+with Ada.Strings.Unbounded;
 
 package No_Build is
 
@@ -29,30 +33,54 @@ package No_Build is
    --  Use this instead of per-call OS checks.
 
    --------------------------------------------------------------------------
-   --  Argument-list helpers.  Build lists with aggregates / &, allocating
-   --  each string with S, e.g. Cmd ("gnatmake", (S ("main.adb"), S ("-O2"))).
+   --  Argument_List -- a Controlled, vector-backed container of strings.
+   --  Memory is managed automatically: deep-copy on assignment, free on
+   --  scope exit.  Build instances with the Args(...) constructors for the
+   --  common case, or Append / & when growing dynamically.
    --------------------------------------------------------------------------
 
-   type String_Access is access String;
-   type Argument_List is
-     array (Positive range <>) of not null String_Access;
-   type Argument_List_Access is access Argument_List;
+   type Argument_List is new Ada.Finalization.Controlled with private;
 
-   function S (Str : String) return not null String_Access;
+   function No_Args return Argument_List;
+   --  Empty list.  Default for procedures that take an Argument_List.
+   --  Defined as a function (not constant) so it satisfies the
+   --  tag-indeterminate requirement for default parameter expressions of
+   --  primitive operations on a tagged type.
 
-   --  Empty argument list.
-   No_Args : constant Argument_List := (1 .. 0 => new String'(""));
+   function Args (A : String)                            return Argument_List;
+   function Args (A, B : String)                         return Argument_List;
+   function Args (A, B, C : String)                      return Argument_List;
+   function Args (A, B, C, D : String)                   return Argument_List;
+   function Args (A, B, C, D, E : String)                return Argument_List;
+   function Args (A, B, C, D, E, F : String)             return Argument_List;
+   function Args (A, B, C, D, E, F, G : String)          return Argument_List;
+   function Args (A, B, C, D, E, F, G, H : String)       return Argument_List;
+   --  Convenience constructors for 1..8 elements.  Beyond eight, chain
+   --  with & or use Append.
+
+   procedure Append (List : in out Argument_List; Item  : String);
+   procedure Append (List : in out Argument_List; Items : Argument_List);
+
+   function "&" (Left, Right : Argument_List) return Argument_List;
+   function "&" (Left : Argument_List; Right : String) return Argument_List;
+   function "&" (Left : String; Right : Argument_List) return Argument_List;
+
+   function Length  (List : Argument_List) return Natural;
+   function Element (List : Argument_List; Index : Positive) return String;
 
    --------------------------------------------------------------------------
    --  Command execution
    --------------------------------------------------------------------------
 
-   type Redirect is record
-      Stdout : String_Access := null;  --  file to receive stdout (null = inherit)
-      Stderr : String_Access := null;  --  file to receive stderr (null = inherit)
-   end record;
+   type Redirect is private;
+   --  Captures optional stdout/stderr file paths.  Default state is
+   --  "inherit both"; build other states with To_File.
 
-   No_Redirect : constant Redirect := (Stdout => null, Stderr => null);
+   No_Redirect : constant Redirect;
+
+   function To_File (Stdout : String := ""; Stderr : String := "")
+     return Redirect;
+   --  Empty path means "inherit"; non-empty means "redirect to that file".
 
    procedure Cmd
      (Program : String;
@@ -65,8 +93,26 @@ package No_Build is
 
    procedure Sh (Command : String);
    --  Run Command via the platform shell (/bin/sh on POSIX, cmd.exe on
-   --  Windows).  Shell syntax is not portable; for portable command
-   --  execution prefer Cmd, which avoids the shell entirely.
+   --  Windows).
+   --
+   --  WARNING: shell syntax is NOT portable.  The two shells disagree
+   --  about almost everything.  Specifically:
+   --
+   --    * Pipes:           '|' works on both; '|&' is bash-only.
+   --    * Sequencing:      '&&' and ';' on POSIX; '&&' and '&' on cmd.exe.
+   --    * Variables:       $VAR / ${VAR} on POSIX vs %VAR% on cmd.exe.
+   --    * Quoting:         'single' quotes are POSIX-only; cmd.exe knows
+   --                       only double quotes and uses different escapes.
+   --    * Globbing:        POSIX expands * before the program runs;
+   --                       cmd.exe leaves * unexpanded for the program.
+   --    * PATH separator:  ':' on POSIX vs ';' on Windows.
+   --    * Slashes:         cmd.exe accepts both '/' and '\', but '/'
+   --                       sometimes parses as a flag introducer.
+   --
+   --  For portable command execution prefer Cmd, which calls execv /
+   --  CreateProcess directly with no shell in the loop.  If you need
+   --  pipes or redirection, branch on Platform and emit two Sh calls --
+   --  see examples/pipe.adb for the canonical pattern.
 
    function Capture
      (Program : String;
@@ -85,8 +131,6 @@ package No_Build is
    Invalid_Proc : constant Proc;
    --  Sentinel value returned when a process could not be spawned.
 
-   Max_Procs : constant := 256;
-
    type Proc_List is private;
    --  Growable list of Proc handles for batch waiting.
 
@@ -101,7 +145,7 @@ package No_Build is
    --  Block until P exits.  Raises Build_Error on non-zero exit.
 
    procedure Append   (List : in out Proc_List; P : Proc);
-   --  Add a Proc handle to List.  Raises Build_Error if List is full.
+   --  Add a Proc handle to List.
 
    procedure Wait_All (List : in out Proc_List);
    --  Wait for every process in List, then clear it.
@@ -125,92 +169,38 @@ package No_Build is
    --  Default Runtime_Probe_Func for GNAT: derives the adalib/libgnat path
    --  from `gcc -print-libgcc-file-name`.
 
+   subtype US is Ada.Strings.Unbounded.Unbounded_String;
+   function "+" (Str : String) return US
+     renames Ada.Strings.Unbounded.To_Unbounded_String;
+   --  Local shorthand for Ada.Strings.Unbounded.To_Unbounded_String, used
+   --  in Ada_Compiler record literals.  Visible to users via `use No_Build;`.
+
    type Ada_Compiler is record
-      Executable            : not null String_Access;         --  e.g. "gnatmake"
-      Compile_Flags         : not null Argument_List_Access;  --  always passed
-      PIC_Flags             : not null Argument_List_Access;  --  added for shared libs
-      Obj_Flag              : not null String_Access;         --  selects obj dir
-      Out_Flag              : not null String_Access;         --  selects output binary
-      Compile_Only_Flag     : not null String_Access;         --  suppresses link
-      Shared_Linker         : not null String_Access;         --  shared-lib driver
-      Shared_Flags          : not null Argument_List_Access;  --  before Shared_Out_Flag
-      Shared_Out_Flag       : not null String_Access;         --  shared-lib output flag
-      Shared_Runtime_Probe  : Runtime_Probe_Func;             --  null = no probe
-      Static_Archiver       : not null String_Access;         --  static-lib archiver
-      Static_Archiver_Flags : not null Argument_List_Access;
+      Executable            : US;             --  e.g. "gnatmake"
+      Compile_Flags         : Argument_List;  --  always passed
+      PIC_Flags             : Argument_List;  --  added for shared libs
+      Obj_Flag              : US;             --  selects obj dir
+      Out_Flag              : US;             --  selects output binary
+      Compile_Only_Flag     : US;             --  suppresses link
+      Shared_Linker         : US;             --  shared-lib driver
+      Shared_Flags          : Argument_List;  --  before Shared_Out_Flag
+      Shared_Out_Flag       : US;             --  shared-lib output flag
+      Shared_Runtime_Probe  : Runtime_Probe_Func := null;
+      Static_Archiver       : US;             --  static-lib archiver
+      Static_Archiver_Flags : Argument_List;
    end record;
 
-   Gnatmake_Compiler : constant Ada_Compiler :=
-     (Executable            => new String'("gnatmake"),
-      Compile_Flags         => new Argument_List'(No_Args),
-      PIC_Flags             =>
-        (case Platform is
-           when Linux | MacOS =>
-             new Argument_List'(1 => new String'("-fPIC")),
-           when Windows =>
-             new Argument_List'(No_Args)),
-      Obj_Flag              => new String'("-D"),
-      Out_Flag              => new String'("-o"),
-      Compile_Only_Flag     => new String'("-c"),
-      Shared_Linker         => new String'("gcc"),
-      Shared_Flags          =>
-        (case Platform is
-           when MacOS =>
-             new Argument_List'(new String'("-dynamiclib"),
-                                new String'("-undefined"),
-                                new String'("dynamic_lookup")),
-           when Linux | Windows =>
-             new Argument_List'(1 => new String'("-shared"))),
-      Shared_Out_Flag       => new String'("-o"),
-      Shared_Runtime_Probe  => Find_Gnat_Runtime'Access,
-      Static_Archiver       => new String'("ar"),
-      Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
-   --  Default descriptor; host-correct toolchain switches via Platform.
+   function Gnatmake_Compiler  return Ada_Compiler;
+   --  Default GNAT descriptor; host-correct toolchain switches via Platform.
    --  Override any field to retarget another toolchain.
 
+   function ObjectAda_Compiler return Ada_Compiler;
    --  PTC ObjectAda (formerly Aonix).  UNTESTED starting point; verify
    --  Obj_Flag / Compile_Only_Flag / driver name against your install.
-   ObjectAda_Compiler : constant Ada_Compiler :=
-     (Executable            => new String'("adabuild"),
-      Compile_Flags         => new Argument_List'(No_Args),
-      PIC_Flags             =>
-        (case Platform is
-           when Linux | MacOS =>
-             new Argument_List'(1 => new String'("-fpic")),
-           when Windows =>
-             new Argument_List'(No_Args)),
-      Obj_Flag              => new String'("-D"),
-      Out_Flag              => new String'("-o"),
-      Compile_Only_Flag     => new String'("-c"),
-      Shared_Linker         => new String'("gcc"),
-      Shared_Flags          =>
-        (case Platform is
-           when MacOS =>
-             new Argument_List'(new String'("-dynamiclib"),
-                                new String'("-undefined"),
-                                new String'("dynamic_lookup")),
-           when Linux | Windows =>
-             new Argument_List'(1 => new String'("-shared"))),
-      Shared_Out_Flag       => new String'("-o"),
-      Shared_Runtime_Probe  => Find_Gnat_Runtime'Access,
-      Static_Archiver       => new String'("ar"),
-      Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
 
+   function Janus_Compiler     return Ada_Compiler;
    --  RR Software Janus/Ada.  UNTESTED.  Janus uses a separate compile/link
    --  pipeline; Executable likely needs to be a wrapper driving both steps.
-   Janus_Compiler : constant Ada_Compiler :=
-     (Executable            => new String'("janus"),
-      Compile_Flags         => new Argument_List'(No_Args),
-      PIC_Flags             => new Argument_List'(No_Args),
-      Obj_Flag              => new String'("/OBJDIR="),
-      Out_Flag              => new String'("/OUT="),
-      Compile_Only_Flag     => new String'("/COMPILE"),
-      Shared_Linker         => new String'("gcc"),
-      Shared_Flags          => new Argument_List'(1 => new String'("-shared")),
-      Shared_Out_Flag       => new String'("-o"),
-      Shared_Runtime_Probe  => null,
-      Static_Archiver       => new String'("ar"),
-      Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
 
    procedure Set_Compiler (C : Ada_Compiler);
    --  Replace the active compiler descriptor.
@@ -316,18 +306,19 @@ package No_Build is
    type File_Kind is (Regular_File, Directory, Symlink, Other);
    --  Symlink is reserved; this implementation never returns it.
 
-   type Walk_Entry is record
-      Path  : String_Access;  --  full path relative to root
-      Name  : String_Access;  --  simple name
+   type Walk_Entry (Path_Len, Name_Len : Natural) is record
+      Path  : String (1 .. Path_Len);   --  full path relative to root
+      Name  : String (1 .. Name_Len);   --  simple name
       Kind  : File_Kind;
-      Depth : Natural;        --  0 = entries directly inside root
+      Depth : Natural;                  --  0 = entries directly inside root
    end record;
 
-   type Walk_Func is
-     not null access function (E : Walk_Entry) return Walk_Action;
-
-   procedure Walk_Dir (Root : String; Func : Walk_Func);
-   --  Pre-order recursive walk of Root.
+   procedure Walk_Dir
+     (Root : String;
+      Func : not null access function (E : Walk_Entry) return Walk_Action);
+   --  Pre-order recursive walk of Root.  Func is an anonymous access so
+   --  nested functions can be passed via 'Access without an accessibility
+   --  failure (same convention as For_Each_File).
 
    --------------------------------------------------------------------------
    --  Logging
@@ -357,17 +348,33 @@ package No_Build is
 
 private
 
+   package Arg_Vectors is new Ada.Containers.Indefinite_Vectors
+     (Index_Type => Positive, Element_Type => String);
+
+   type Argument_List is new Ada.Finalization.Controlled with record
+      Items : Arg_Vectors.Vector;
+   end record;
+
+   type Redirect is record
+      Stdout : US;   --  empty = inherit
+      Stderr : US;
+   end record;
+
+   No_Redirect : constant Redirect :=
+     (Stdout => Ada.Strings.Unbounded.Null_Unbounded_String,
+      Stderr => Ada.Strings.Unbounded.Null_Unbounded_String);
+
    type Proc is record
       Pid : System.Address := System.Null_Address;
    end record;
 
    Invalid_Proc : constant Proc := (Pid => System.Null_Address);
 
-   type Proc_Array is array (1 .. Max_Procs) of Proc;
+   package Proc_Vectors is new Ada.Containers.Vectors
+     (Index_Type => Positive, Element_Type => Proc);
 
    type Proc_List is record
-      Items : Proc_Array := (others => Invalid_Proc);
-      Count : Natural    := 0;
+      Items : Proc_Vectors.Vector;
    end record;
 
 end No_Build;

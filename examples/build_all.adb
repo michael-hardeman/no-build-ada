@@ -34,7 +34,7 @@ procedure Build_All is
       Compile_Program (Examples / Example,
                        Output  => Bin,
                        Obj_Dir => Obj,
-                       Extra   => Argument_List'(S ("-I."), S ("-I" & Lib)));
+                       Extra   => Args ("-I.", "-I" & Lib));
       Cmd (Bin);
    end Build_And_Run_Example;
 
@@ -42,7 +42,7 @@ begin
    Go_Rebuild_Urself (Binary_Path => "./examples/build_all",
                       Source_Path => "examples/build_all.adb",
                       Obj_Dir     => Obj,
-                      Extra       => Argument_List'(1 => S ("-I.")));
+                      Extra       => Args ("-I."));
 
    --  Compile library sources into obj/ (non-PIC) and produce a static
    --  archive.  obj/greet.ali stays there so downstream Compile_Program

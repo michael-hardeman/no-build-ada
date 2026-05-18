@@ -18,6 +18,6 @@ begin
          Sh ("echo Hello, World | examples\tools\rot13"
              & " | examples\tools\hex > output.txt");
    end case;
-   Cmd ("examples/tools/cat", Argument_List'(1 => S ("output.txt")));
+   Cmd ("examples/tools/cat", Args ("output.txt"));
    Remove_Path ("output.txt");
 end Pipe;
