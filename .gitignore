@@ -2,3 +2,4 @@
 *.ali
 *.exe
 obj/
+tmp_*/

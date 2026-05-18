@@ -1,0 +1,10 @@
+build_tests
+test_paths
+test_args
+test_make_dirs
+test_is_newer
+test_capture
+test_walk
+test_file_io
+obj/
+*.exe
