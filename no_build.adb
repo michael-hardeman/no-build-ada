@@ -18,38 +18,22 @@ package body No_Build is
    use Ada.Text_IO;
    use type System.Address;
 
-   --------------------------------------------------------------------------
-   --  dlopen / dlsym — the only two pragma Import (C, ...) in this package.
-   --  Everything else is loaded at runtime through these two functions.
-   --
-   --  On Linux (glibc >= 2.34) and macOS these resolve against libc /
-   --  libSystem automatically.  On Windows the user must supply a shim that
-   --  exports `dlopen` and `dlsym` on top of LoadLibraryA / GetProcAddress
-   --  and `with`s it from build.adb so the linker pulls it in.  See the
-   --  Windows section of the README for the stock shim.
-   --------------------------------------------------------------------------
+   --  dlopen / dlsym are the only pragma Import in this package; every
+   --  other OS call is resolved through them at elaboration time.  Windows
+   --  callers must supply a shim — see the README.
 
    type DL_Handle is new System.Address;
 
-   function Default_DL_Open
-     (Path : System.Address; Mode : Integer) return DL_Handle;
+   function Default_DL_Open (Path : System.Address; Mode : Integer) return DL_Handle;
    pragma Import (C, Default_DL_Open, "dlopen");
 
-   function Default_DL_Sym
-     (Handle : DL_Handle; Symbol : System.Address) return System.Address;
+   function Default_DL_Sym (Handle : DL_Handle; Symbol : System.Address) return System.Address;
    pragma Import (C, Default_DL_Sym, "dlsym");
 
-   --------------------------------------------------------------------------
-   --  C helper: convert an Ada String to a null-terminated C string on the
-   --  stack, call dlsym, and return the raw address.
-   --------------------------------------------------------------------------
-
-   function To_Address is new Ada.Unchecked_Conversion
-     (Interfaces.C.Strings.chars_ptr, System.Address);
+   function To_Address is new Ada.Unchecked_Conversion (Interfaces.C.Strings.chars_ptr, System.Address);
 
    function Sym (Handle : DL_Handle; Name : String) return System.Address is
-      C_Name : Interfaces.C.Strings.chars_ptr :=
-        Interfaces.C.Strings.New_String (Name);
+      C_Name : Interfaces.C.Strings.chars_ptr := Interfaces.C.Strings.New_String (Name);
       Result : System.Address;
    begin
       Result := Default_DL_Sym (Handle, To_Address (C_Name));
@@ -61,41 +45,42 @@ package body No_Build is
    --  POSIX process function pointer types (loaded via dlsym at elaboration)
    --------------------------------------------------------------------------
 
-   type Fork_Func is access function return Interfaces.C.int;
-   pragma Convention (C, Fork_Func);
+   type Fork_Func is access function
+      return Interfaces.C.int with Convention => C;
 
-   type Execv_Func is access function
-     (Path : System.Address;
-      Argv : System.Address) return Interfaces.C.int;
-   pragma Convention (C, Execv_Func);
+   type Execv_Func is access function (
+      Path : System.Address;
+      Argv : System.Address)
+      return Interfaces.C.int with Convention => C;
 
-   type Waitpid_Func is access function
-     (Pid     : Interfaces.C.int;
+   type Waitpid_Func is access function (
+      Pid     : Interfaces.C.int;
       Status  : access Interfaces.C.int;
-      Options : Interfaces.C.int) return Interfaces.C.int;
-   pragma Convention (C, Waitpid_Func);
+      Options : Interfaces.C.int) 
+      return Interfaces.C.int with Convention => C;
 
    type Exit_Func is access procedure (Status : Interfaces.C.int);
    pragma Convention (C, Exit_Func);
 
-   type Dup2_Func is access function
-     (Old_FD, New_FD : Interfaces.C.int) return Interfaces.C.int;
-   pragma Convention (C, Dup2_Func);
+   type Dup2_Func is access function (
+      Old_FD, New_FD : Interfaces.C.int)
+      return Interfaces.C.int with Convention => C;
 
-   type Open_Func is access function
-     (Path  : System.Address;
+   type Open_Func is access function (
+      Path  : System.Address;
       Flags : Interfaces.C.int;
-      Mode  : Interfaces.C.int) return Interfaces.C.int;
-   pragma Convention (C, Open_Func);
+      Mode  : Interfaces.C.int)
+      return Interfaces.C.int with Convention => C;
 
-   type Close_Func is access function
-     (FD : Interfaces.C.int) return Interfaces.C.int;
-   pragma Convention (C, Close_Func);
+   type Close_Func is access function (
+      FD : Interfaces.C.int)
+      return Interfaces.C.int with Convention => C;
 
-   type Rename_Func is access function
-     (Old_Path : System.Address;
-      New_Path : System.Address) return Interfaces.C.int;
-   pragma Convention (C, Rename_Func);
+   type Rename_Func is access function (
+      Old_Path, New_Path : System.Address)
+      return Interfaces.C.int with Convention => C;
+
+   function Is_Ok (X : Interfaces.C.int) return Boolean is (Interfaces.C."=" (X, 0));
 
    function To_Fork    is new Ada.Unchecked_Conversion (System.Address, Fork_Func);
    function To_Execv   is new Ada.Unchecked_Conversion (System.Address, Execv_Func);
@@ -106,8 +91,7 @@ package body No_Build is
    function To_Close   is new Ada.Unchecked_Conversion (System.Address, Close_Func);
    function To_Rename  is new Ada.Unchecked_Conversion (System.Address, Rename_Func);
 
-   --  Function pointers — initialized by Load_Posix_Symbols (called at
-   --  elaboration after Detect_Platform).
+   --  Initialized by Load_Posix_Symbols at elaboration.
    C_Fork    : Fork_Func    := null;
    C_Execv   : Execv_Func   := null;
    C_Waitpid : Waitpid_Func := null;
@@ -117,17 +101,14 @@ package body No_Build is
    C_Close   : Close_Func   := null;
    C_Rename  : Rename_Func  := null;
 
-   --  POSIX constants for open(2)
-   O_WRONLY   : constant := 1;
-   O_CREAT    : constant := 64;    --  Linux; overridden for macOS below
-   O_TRUNC    : constant := 512;   --  Linux; overridden for macOS below
+   --  POSIX open(2) constants.  O_CREAT/O_TRUNC differ between Linux and macOS.
+   O_WRONLY : constant := 1;
+   O_CREAT  : constant := 64;
+   O_TRUNC  : constant := 512;
 
-   function Open_Flags return Interfaces.C.int is
-   begin
-      --  macOS uses different values for O_CREAT and O_TRUNC
+   function Open_Flags return Interfaces.C.int is begin
       if Platform = MacOS then
          return Interfaces.C.int (O_WRONLY + 16#200# + 16#400#);
-         --  O_CREAT = 0x200, O_TRUNC = 0x400 on macOS
       else
          return Interfaces.C.int (O_WRONLY + O_CREAT + O_TRUNC);
       end if;
@@ -136,8 +117,7 @@ package body No_Build is
    procedure Load_Posix_Symbols is
       Lib : DL_Handle;
    begin
-      --  dlopen(NULL, RTLD_LAZY) opens the main process image, exposing
-      --  all libc symbols that are already linked in.
+      --  dlopen(NULL, RTLD_LAZY): main image, picking up libc.
       Lib := Default_DL_Open (System.Null_Address, 1);
 
       C_Fork    := To_Fork    (Sym (Lib, "fork"));
@@ -148,24 +128,27 @@ package body No_Build is
       C_Open    := To_Open    (Sym (Lib, "open"));
       C_Close   := To_Close   (Sym (Lib, "close"));
       C_Rename  := To_Rename  (Sym (Lib, "rename"));
+
+      if C_Fork = null or else C_Execv = null or else C_Waitpid = null
+        or else C_Exit = null or else C_Dup2 = null or else C_Open = null
+        or else C_Close = null or else C_Rename = null
+      then
+         raise Build_Error with "failed to resolve libc symbols via dlsym";
+      end if;
    end Load_Posix_Symbols;
 
-   --------------------------------------------------------------------------
-   --  Win32 process function pointer types (loaded via dlsym at elaboration
-   --  on Windows).  kernel32.dll exports CreateProcessA / WaitForSingleObject
-   --  / GetExitCodeProcess / CloseHandle / CreateFileA / GetStdHandle /
-   --  ExitProcess — fork()/execv()/waitpid() do not exist on native Win32,
-   --  so we use the Win32 process API instead.
-   --------------------------------------------------------------------------
+   --  Win32 equivalents loaded from kernel32.dll on Windows; fork/execv
+   --  don't exist there.
 
    subtype Win_DWORD is Interfaces.C.unsigned;
    subtype Win_WORD  is Interfaces.C.unsigned_short;
    subtype Win_BOOL  is Interfaces.C.int;
 
+   Win_FALSE                 : constant Win_BOOL  := 0;
    Win_TRUE                  : constant Win_BOOL  := 1;
    Win_STARTF_USESTDHANDLES  : constant Win_DWORD := 16#0000_0100#;
    Win_INFINITE              : constant Win_DWORD := 16#FFFF_FFFF#;
-   --  GetStdHandle ids are negative DWORDs (-10/-11/-12 as unsigned).
+   --  GetStdHandle IDs: -10/-11/-12 as unsigned.
    Win_STD_INPUT_HANDLE      : constant Win_DWORD := 16#FFFF_FFF6#;
    Win_STD_OUTPUT_HANDLE     : constant Win_DWORD := 16#FFFF_FFF5#;
    Win_STD_ERROR_HANDLE      : constant Win_DWORD := 16#FFFF_FFF4#;
@@ -174,10 +157,12 @@ package body No_Build is
    Win_FILE_SHARE_WRITE      : constant Win_DWORD := 16#0000_0002#;
    Win_CREATE_ALWAYS         : constant Win_DWORD := 2;
    Win_FILE_ATTRIBUTE_NORMAL : constant Win_DWORD := 16#0000_0080#;
-   --  MoveFileExA flags.  REPLACE_EXISTING overwrites the target,
-   --  COPY_ALLOWED lets the OS fall back to copy+delete across volumes.
+   --  MoveFileExA: REPLACE_EXISTING overwrites, COPY_ALLOWED crosses volumes.
    Win_MOVEFILE_REPLACE_EXISTING : constant Win_DWORD := 16#0000_0001#;
    Win_MOVEFILE_COPY_ALLOWED     : constant Win_DWORD := 16#0000_0002#;
+
+   function Win_Is_Error (Result : Win_BOOL) return Boolean is (Interfaces.C."=" (Result, Win_FALSE));
+   function Win_Is_Ok    (Result : Win_BOOL) return Boolean is (Interfaces.C."=" (Result, Win_TRUE));
 
    type Win_Startup_Info is record
       Cb              : Win_DWORD      := 0;
@@ -198,26 +183,23 @@ package body No_Build is
       H_Std_Input     : System.Address := System.Null_Address;
       H_Std_Output    : System.Address := System.Null_Address;
       H_Std_Error     : System.Address := System.Null_Address;
-   end record;
-   pragma Convention (C, Win_Startup_Info);
+   end record with Convention => C;
 
    type Win_Process_Info is record
       H_Process  : System.Address := System.Null_Address;
       H_Thread   : System.Address := System.Null_Address;
       Process_Id : Win_DWORD      := 0;
       Thread_Id  : Win_DWORD      := 0;
-   end record;
-   pragma Convention (C, Win_Process_Info);
+   end record with Convention => C;
 
    type Win_Security_Attrs is record
       Length     : Win_DWORD      := 0;
       Descriptor : System.Address := System.Null_Address;
       Inherit    : Win_BOOL       := 0;
-   end record;
-   pragma Convention (C, Win_Security_Attrs);
+   end record with Convention => C;
 
-   type CreateProcess_Func is access function
-     (App_Name        : System.Address;
+   type CreateProcess_Func is access function (
+      App_Name        : System.Address;
       Cmd_Line        : System.Address;
       Proc_Attrs      : System.Address;
       Thread_Attrs    : System.Address;
@@ -226,62 +208,54 @@ package body No_Build is
       Environment     : System.Address;
       Current_Dir     : System.Address;
       Startup_Info    : System.Address;
-      Process_Info    : System.Address) return Win_BOOL;
-   pragma Convention (Stdcall, CreateProcess_Func);
+      Process_Info    : System.Address)
+      return Win_BOOL with Convention => Stdcall;
 
-   type WaitForSingleObject_Func is access function
-     (Handle       : System.Address;
-      Milliseconds : Win_DWORD) return Win_DWORD;
-   pragma Convention (Stdcall, WaitForSingleObject_Func);
+   type WaitForSingleObject_Func is access function (
+      Handle       : System.Address;
+      Milliseconds : Win_DWORD)
+      return Win_DWORD with Convention => Stdcall;
 
-   type GetExitCodeProcess_Func is access function
-     (Process   : System.Address;
-      Exit_Code : access Win_DWORD) return Win_BOOL;
-   pragma Convention (Stdcall, GetExitCodeProcess_Func);
+   type GetExitCodeProcess_Func is access function (
+      Process   : System.Address;
+      Exit_Code : access Win_DWORD)
+      return Win_BOOL with Convention => Stdcall;
 
-   type CloseHandle_Func is access function
-     (Handle : System.Address) return Win_BOOL;
-   pragma Convention (Stdcall, CloseHandle_Func);
+   type CloseHandle_Func is access function (
+      Handle : System.Address)
+      return Win_BOOL with Convention => Stdcall;
 
-   type CreateFile_Func is access function
-     (File_Name      : System.Address;
+   type CreateFile_Func is access function (
+      File_Name      : System.Address;
       Desired_Access : Win_DWORD;
       Share_Mode     : Win_DWORD;
       Security_Attrs : System.Address;
       Creation_Disp  : Win_DWORD;
       Flags_Attrs    : Win_DWORD;
-      Template_File  : System.Address) return System.Address;
-   pragma Convention (Stdcall, CreateFile_Func);
+      Template_File  : System.Address)
+      return System.Address with Convention => Stdcall;
 
-   type GetStdHandle_Func is access function
-     (Std_Handle : Win_DWORD) return System.Address;
-   pragma Convention (Stdcall, GetStdHandle_Func);
+   type GetStdHandle_Func is access function (
+      Std_Handle : Win_DWORD)
+      return System.Address with Convention => Stdcall;
 
-   type ExitProcess_Func is access procedure (Exit_Code : Win_DWORD);
-   pragma Convention (Stdcall, ExitProcess_Func);
+   type ExitProcess_Func is access procedure (
+      Exit_Code : Win_DWORD) with Convention => Stdcall;
 
-   type MoveFileEx_Func is access function
-     (Existing : System.Address;
+   type MoveFileEx_Func is access function (
+      Existing : System.Address;
       New_Name : System.Address;
-      Flags    : Win_DWORD) return Win_BOOL;
-   pragma Convention (Stdcall, MoveFileEx_Func);
+      Flags    : Win_DWORD)
+      return Win_BOOL with Convention => Stdcall;
 
-   function To_CreateProcess       is new Ada.Unchecked_Conversion
-     (System.Address, CreateProcess_Func);
-   function To_WaitForSingleObject is new Ada.Unchecked_Conversion
-     (System.Address, WaitForSingleObject_Func);
-   function To_GetExitCodeProcess  is new Ada.Unchecked_Conversion
-     (System.Address, GetExitCodeProcess_Func);
-   function To_CloseHandle         is new Ada.Unchecked_Conversion
-     (System.Address, CloseHandle_Func);
-   function To_CreateFile          is new Ada.Unchecked_Conversion
-     (System.Address, CreateFile_Func);
-   function To_GetStdHandle        is new Ada.Unchecked_Conversion
-     (System.Address, GetStdHandle_Func);
-   function To_ExitProcess         is new Ada.Unchecked_Conversion
-     (System.Address, ExitProcess_Func);
-   function To_MoveFileEx          is new Ada.Unchecked_Conversion
-     (System.Address, MoveFileEx_Func);
+   function To_CreateProcess       is new Ada.Unchecked_Conversion (System.Address, CreateProcess_Func);
+   function To_WaitForSingleObject is new Ada.Unchecked_Conversion (System.Address, WaitForSingleObject_Func);
+   function To_GetExitCodeProcess  is new Ada.Unchecked_Conversion (System.Address, GetExitCodeProcess_Func);
+   function To_CloseHandle         is new Ada.Unchecked_Conversion (System.Address, CloseHandle_Func);
+   function To_CreateFile          is new Ada.Unchecked_Conversion (System.Address, CreateFile_Func);
+   function To_GetStdHandle        is new Ada.Unchecked_Conversion (System.Address, GetStdHandle_Func);
+   function To_ExitProcess         is new Ada.Unchecked_Conversion (System.Address, ExitProcess_Func);
+   function To_MoveFileEx          is new Ada.Unchecked_Conversion (System.Address, MoveFileEx_Func);
 
    W_CreateProcess       : CreateProcess_Func       := null;
    W_WaitForSingleObject : WaitForSingleObject_Func := null;
@@ -303,22 +277,14 @@ package body No_Build is
          raise Build_Error with "failed to load kernel32.dll";
       end if;
 
-      W_CreateProcess       :=
-        To_CreateProcess       (Sym (Lib, "CreateProcessA"));
-      W_WaitForSingleObject :=
-        To_WaitForSingleObject (Sym (Lib, "WaitForSingleObject"));
-      W_GetExitCodeProcess  :=
-        To_GetExitCodeProcess  (Sym (Lib, "GetExitCodeProcess"));
-      W_CloseHandle         :=
-        To_CloseHandle         (Sym (Lib, "CloseHandle"));
-      W_CreateFile          :=
-        To_CreateFile          (Sym (Lib, "CreateFileA"));
-      W_GetStdHandle        :=
-        To_GetStdHandle        (Sym (Lib, "GetStdHandle"));
-      W_ExitProcess         :=
-        To_ExitProcess         (Sym (Lib, "ExitProcess"));
-      W_MoveFileEx          :=
-        To_MoveFileEx          (Sym (Lib, "MoveFileExA"));
+      W_CreateProcess       := To_CreateProcess       (Sym (Lib, "CreateProcessA"));
+      W_WaitForSingleObject := To_WaitForSingleObject (Sym (Lib, "WaitForSingleObject"));
+      W_GetExitCodeProcess  := To_GetExitCodeProcess  (Sym (Lib, "GetExitCodeProcess"));
+      W_CloseHandle         := To_CloseHandle         (Sym (Lib, "CloseHandle"));
+      W_CreateFile          := To_CreateFile          (Sym (Lib, "CreateFileA"));
+      W_GetStdHandle        := To_GetStdHandle        (Sym (Lib, "GetStdHandle"));
+      W_ExitProcess         := To_ExitProcess         (Sym (Lib, "ExitProcess"));
+      W_MoveFileEx          := To_MoveFileEx          (Sym (Lib, "MoveFileExA"));
 
       if W_CreateProcess = null
         or else W_WaitForSingleObject = null
@@ -335,25 +301,31 @@ package body No_Build is
    end Load_Win32_Symbols;
 
    --------------------------------------------------------------------------
+   --  Ignore
+   --------------------------------------------------------------------------
+
+   procedure Ignore (X : System.Address)        is null;
+   procedure Ignore (X : Interfaces.C.int)      is null;
+   procedure Ignore (X : Interfaces.C.unsigned) is null;
+   procedure Ignore (X : Boolean)               is null;
+
+   --------------------------------------------------------------------------
    --  Logging
    --------------------------------------------------------------------------
 
-   procedure Default_Log_Handler (Tag, Msg : String) is
-   begin
+   procedure Default_Log_Handler (Tag, Msg : String) is begin
       Put_Line (Standard_Error, "[" & Tag & "] " & Msg);
    end Default_Log_Handler;
 
    Active_Handler : Log_Handler := Default_Log_Handler'Access;
 
-   procedure Log (Tag, Msg : String) is
-   begin
+   procedure Log (Tag, Msg : String) is begin
       if Active_Handler /= null then
          Active_Handler (Tag, Msg);
       end if;
    end Log;
 
-   procedure Set_Log_Handler (Handler : Log_Handler) is
-   begin
+   procedure Set_Log_Handler (Handler : Log_Handler) is begin
       if Handler = null then
          Active_Handler := Default_Log_Handler'Access;
       else
@@ -365,8 +337,7 @@ package body No_Build is
    --  String_Access helper
    --------------------------------------------------------------------------
 
-   function S (Str : String) return String_Access is
-   begin
+   function S (Str : String) return not null String_Access is begin
       return new String'(Str);
    end S;
 
@@ -374,19 +345,7 @@ package body No_Build is
    --  Command execution
    --------------------------------------------------------------------------
 
-   procedure Cmd (Program : String; Args : Argument_List) is
-   begin
-      Cmd (Program, Args, No_Redirect);
-   end Cmd;
-
-   procedure Cmd (Program : String) is
-      Empty : constant Argument_List (1 .. 0) := (others => null);
-   begin
-      Cmd (Program, Empty, No_Redirect);
-   end Cmd;
-
-   procedure Sh (Command : String) is
-   begin
+   procedure Sh (Command : String) is begin
       case Platform is
          when Linux | MacOS =>
             Cmd ("/bin/sh", Argument_List'(S ("-c"), S (Command)));
@@ -404,85 +363,71 @@ package body No_Build is
       Display : String) return String
    is
       function Has_Slash return Boolean is
-      begin
-         for C of Program loop
-            if C = '/' or else C = '\' then
-               return True;
-            end if;
-         end loop;
-         return False;
-      end Has_Slash;
+        (for some C of Program => C = '/' or else C = '\');
 
-      function Probe (Path : String) return Boolean is
+      --  Return a usable path: Path itself if it points to a regular file,
+      --  Path & ".exe" on Windows if that exists, else "".
+      function Probe_With_Exe (Path : String) return String is
          use Ada.Directories;
       begin
-         return Exists (Path)
-           and then Kind (Path) = Ordinary_File;
-      end Probe;
+         if Exists (Path) and then Kind (Path) = Ordinary_File then
+            return Path;
+         end if;
+         if Platform = Windows and then not Ends_With (Path, ".exe") then
+            declare
+               Exe : constant String := Path & ".exe";
+            begin
+               if Exists (Exe) and then Kind (Exe) = Ordinary_File then
+                  return Exe;
+               end if;
+            end;
+         end if;
+         return "";
+      end Probe_With_Exe;
 
       Separator : constant Character :=
         (if Platform = Windows then ';' else ':');
    begin
       Log ("CMD", Display);
 
-      --  If the program contains a path separator, use it as-is.  On
-      --  Windows also probe with ".exe" appended, since callers naturally
-      --  pass "examples/file" but the linker produced "examples/file.exe".
       if Has_Slash then
-         if Probe (Program) then
-            return Program;
-         end if;
-         if Platform = Windows
-           and then not Ends_With (Program, ".exe")
-           and then Probe (Program & ".exe")
-         then
-            return Program & ".exe";
-         end if;
-         Log ("ERRO", "program not found: " & Program);
-         raise Build_Error with "program not found: " & Program;
+         declare
+            Hit : constant String := Probe_With_Exe (Program);
+         begin
+            if Hit /= "" then
+               return Hit;
+            end if;
+            Log ("ERRO", "program not found: " & Program);
+            raise Build_Error with "program not found: " & Program;
+         end;
       end if;
 
-      --  Walk PATH directories.
       if Ada.Environment_Variables.Exists ("PATH") then
          declare
             PATH  : constant String :=
               Ada.Environment_Variables.Value ("PATH");
             Start : Positive := PATH'First;
+
+            function Try (Dir : String) return String is
+              (if Dir = "" then "" else Probe_With_Exe (Dir / Program));
          begin
             for I in PATH'Range loop
                if PATH (I) = Separator then
-                  if I > Start then
-                     declare
-                        Dir  : constant String := PATH (Start .. I - 1);
-                        Full : constant String := Dir / Program;
-                     begin
-                        if Probe (Full) then return Full; end if;
-                        if Platform = Windows
-                          and then not Ends_With (Program, ".exe")
-                        then
-                           if Probe (Full & ".exe") then
-                              return Full & ".exe";
-                           end if;
-                        end if;
-                     end;
-                  end if;
+                  declare
+                     Hit : constant String :=
+                       Try (PATH (Start .. I - 1));
+                  begin
+                     if Hit /= "" then return Hit; end if;
+                  end;
                   Start := I + 1;
                end if;
             end loop;
-            --  Last segment (no trailing separator).
             if Start <= PATH'Last then
                declare
-                  Dir  : constant String := PATH (Start .. PATH'Last);
-                  Full : constant String := Dir / Program;
+                  Hit : constant String :=
+                    Try (PATH (Start .. PATH'Last));
                begin
-                  if Probe (Full) then return Full; end if;
-                  if Platform = Windows
-                    and then not Ends_With (Program, ".exe")
-                  then
-                     if Probe (Full & ".exe") then
-                        return Full & ".exe";
-                     end if;
-                  end if;
+                  if Hit /= "" then return Hit; end if;
                end;
             end if;
          end;
@@ -500,9 +445,7 @@ package body No_Build is
       D : Unbounded_String := To_Unbounded_String (Program);
    begin
       for A of Args loop
-         if A /= null then
-            Append (D, " " & A.all);
-         end if;
+         Append (D, " " & A.all);
       end loop;
       return To_String (D);
    end Display_Of;
@@ -511,9 +454,8 @@ package body No_Build is
    --  Internal helpers: POSIX process spawn via dlsym'd fork/execv/waitpid
    --------------------------------------------------------------------------
 
-   --  Build a C argv array: null-terminated array of pointers to
-   --  null-terminated strings.  Returns a heap-allocated block whose
-   --  address can be passed to execv().
+   --  C argv: NULL-terminated array of NUL-terminated strings, suitable for
+   --  passing to execv.
    type C_Str_Array is array (Natural range <>) of
      Interfaces.C.Strings.chars_ptr;
    type C_Str_Array_Access is access C_Str_Array;
@@ -528,31 +470,25 @@ package body No_Build is
    begin
       Argv (0) := New_String (Prog_Path);
       for I in Args'Range loop
-         if Args (I) /= null then
-            Argv (I - Args'First + 1) := New_String (Args (I).all);
-         else
-            Argv (I - Args'First + 1) := Null_Ptr;
-         end if;
+         Argv (I - Args'First + 1) := New_String (Args (I).all);
       end loop;
       Argv (Args'Length + 1) := Null_Ptr;  --  NULL terminator
       return Argv;
    end Build_Argv;
 
+   --  Frees the chars_ptrs; the small C_Str_Array block itself leaks
+   --  (one short-lived allocation per Cmd / Cmd_Async).
    procedure Free_Argv (Argv : in out C_Str_Array_Access) is
    begin
       if Argv /= null then
          for I in Argv'Range loop
             Interfaces.C.Strings.Free (Argv (I));
          end loop;
-         --  Note: we leak the C_Str_Array block itself; it is small and
-         --  short-lived (one allocation per Cmd/Cmd_Async call).
          Argv := null;
       end if;
    end Free_Argv;
 
-   --  Redirect a file descriptor: open a file, dup2 it onto Target_FD,
-   --  then close the original.  Called in the child process between fork
-   --  and execv.
+   --  Child-side fd redirection (open + dup2 + close).
    procedure Redirect_FD (File_Path : String; Target_FD : Interfaces.C.int) is
       use Interfaces.C;
       use Interfaces.C.Strings;
@@ -568,38 +504,36 @@ package body No_Build is
          C_Exit (1);
       end if;
       if FD /= Target_FD then
-         declare
-            Dummy : int;
-         begin
-            Dummy := C_Close (FD);
-         end;
+         Ignore (C_Close (FD));
       end if;
    end Redirect_FD;
 
-   --  Extract exit status from the raw waitpid status word.
-   --  WIFEXITED(s) = ((s) & 0x7f) == 0
-   --  WEXITSTATUS(s) = ((s) >> 8) & 0xff
+   --  WIFEXITED + WEXITSTATUS on a raw waitpid status word; -1 on signal.
    function Exit_Status_Of (Status : Interfaces.C.int) return Integer is
       S : constant Integer := Integer (Status);
    begin
       if (S mod 128) = 0 then
          return (S / 256) mod 256;
       else
-         return -1;  --  killed by signal
+         return -1;
       end if;
    end Exit_Status_Of;
 
-   --  Spawn a child process using fork+execv.  Optionally redirect
-   --  stdout (fd 1) and/or stderr (fd 2) to files.
-   --  Returns the child PID as a System.Address (for Proc.Pid).
-   --  If Wait_For_Exit is True, waits and returns Null_Address; raises
-   --  Build_Error on non-zero exit.
-   function Posix_Spawn
-     (Prog_Path      : String;
-      Args           : Argument_List;
-      Stdout_File    : String_Access;
-      Stderr_File    : String_Access;
-      Wait_For_Exit  : Boolean) return System.Address
+   procedure Check_Exit (Code : Integer) is
+   begin
+      if Code /= 0 then
+         Log ("ERRO", "command exited with status" & Code'Image);
+         raise Build_Error with "command failed (exit" & Code'Image & ")";
+      end if;
+   end Check_Exit;
+
+   --  fork+execv child.  Wait_For_Exit => True waits and raises on non-zero;
+   --  False returns the child PID packed into a System.Address.
+   function Posix_Spawn (Prog_Path      : String;
+                         Args           : Argument_List;
+                         Stdout_File    : String_Access;
+                         Stderr_File    : String_Access;
+                         Wait_For_Exit  : Boolean) return System.Address
    is
       use Interfaces.C;
       use type System.Address;
@@ -626,11 +560,7 @@ package body No_Build is
          end if;
 
          C_Path := Interfaces.C.Strings.New_String (Prog_Path);
-         declare
-            Dummy : int;
-         begin
-            Dummy := C_Execv (To_Address (C_Path), Argv (0)'Address);
-         end;
+         Ignore (C_Execv (To_Address (C_Path), Argv (0)'Address));
          --  If execv returns, it failed.
          C_Exit (127);
       end if;
@@ -639,9 +569,7 @@ package body No_Build is
       Free_Argv (Argv);
 
       if not Wait_For_Exit then
-         --  Return the child PID for async tracking.  Pack the int PID into
-         --  a pointer-sized Integer_Address first so the conversion to
-         --  System.Address is size-safe.
+         --  Pack the int PID into a pointer-sized address.
          return System.Storage_Elements.To_Address
                   (System.Storage_Elements.Integer_Address (Pid));
       end if;
@@ -652,23 +580,13 @@ package body No_Build is
          exit when Waited = Pid or else Waited < 0;
       end loop;
 
-      declare
-         Code : constant Integer := Exit_Status_Of (Status);
-      begin
-         if Code /= 0 then
-            Log ("ERRO", "command exited with status" & Code'Image);
-            raise Build_Error with "command failed (exit" & Code'Image & ")";
-         end if;
-      end;
-
+      Check_Exit (Exit_Status_Of (Status));
       return System.Null_Address;
    end Posix_Spawn;
 
-   --  Wait for a specific PID.  Returns the exit status.
    function Posix_Wait (Pid_Addr : System.Address) return Integer is
       use Interfaces.C;
-      Pid    : constant int :=
-        int (System.Storage_Elements.To_Integer (Pid_Addr));
+      Pid    : constant int := int (System.Storage_Elements.To_Integer (Pid_Addr));
       Status : aliased int;
       Waited : int;
    begin
@@ -680,16 +598,13 @@ package body No_Build is
    end Posix_Wait;
 
    --------------------------------------------------------------------------
-   --  Internal helpers: Win32 process spawn via CreateProcessA
+   --  Win32 process spawn via CreateProcessA
    --------------------------------------------------------------------------
 
-   --  Quote a single argument per CommandLineToArgvW's reverse parsing rules
-   --  (2n backslashes + " -> n backslashes ending a quoted run; 2n+1 ->
-   --  n backslashes plus literal "; trailing backslashes inside quotes get
-   --  doubled).  Appends to B.
-   procedure Win32_Append_Arg
-     (B : in out Ada.Strings.Unbounded.Unbounded_String; Arg : String)
-   is
+   --  Quote one argument per CommandLineToArgvW's reverse rules: 2n '\'s + '"'
+   --  end a quoted run, 2n+1 quote a literal '"', trailing '\'s inside quotes
+   --  are doubled.
+   procedure Win32_Append_Arg (B : in out Ada.Strings.Unbounded.Unbounded_String; Arg : String) is
       use Ada.Strings.Unbounded;
       Needs_Quote : Boolean := Arg'Length = 0;
    begin
@@ -739,165 +654,135 @@ package body No_Build is
       Append (B, '"');
    end Win32_Append_Arg;
 
-   function Build_Command_Line
-     (Prog_Path : String;
-      Args      : Argument_List) return String
-   is
+   function Build_Command_Line (Prog_Path : String; Args : Argument_List) return String is
       use Ada.Strings.Unbounded;
       B : Unbounded_String;
    begin
       Win32_Append_Arg (B, Prog_Path);
       for A of Args loop
-         if A /= null then
-            Append (B, ' ');
-            Win32_Append_Arg (B, A.all);
-         end if;
+         Append (B, ' ');
+         Win32_Append_Arg (B, A.all);
       end loop;
       return To_String (B);
    end Build_Command_Line;
 
-   --  Open a file for the child's stdout/stderr.  Returns an inheritable
-   --  handle suitable for placing in STARTUPINFO; raises Build_Error on
-   --  failure.
+   --  Open a file as an inheritable handle for STARTUPINFO redirection.
    function Win32_Open_For_Redirect (Path : String) return System.Address is
       use Interfaces.C.Strings;
       use System.Storage_Elements;
       use type Interfaces.C.unsigned;
       C_Path : chars_ptr := New_String (Path);
-      SA     : aliased Win_Security_Attrs :=
-        (Length     => Win_DWORD
-                         (Win_Security_Attrs'Object_Size
-                          / System.Storage_Unit),
+      Security_Attrs : aliased Win_Security_Attrs := (
+         Length     => Win_DWORD (Win_Security_Attrs'Object_Size / System.Storage_Unit),
          Descriptor => System.Null_Address,
          Inherit    => Win_TRUE);
-      --  INVALID_HANDLE_VALUE == (HANDLE)(-1); 'Last gives the all-ones
-      --  bit pattern at whatever word size we're on.
+      --  INVALID_HANDLE_VALUE == (HANDLE)(-1); 'Last is the all-ones value
+      --  at the host word size.
       Invalid : constant System.Address := To_Address (Integer_Address'Last);
-      H       : System.Address;
+      Handle  : System.Address;
    begin
-      H := W_CreateFile
-             (To_Address (C_Path),
-              Win_GENERIC_WRITE,
-              Win_FILE_SHARE_READ + Win_FILE_SHARE_WRITE,
-              SA'Address,
-              Win_CREATE_ALWAYS,
-              Win_FILE_ATTRIBUTE_NORMAL,
-              System.Null_Address);
+      Handle := W_CreateFile (To_Address (C_Path),
+                              Win_GENERIC_WRITE,
+                              Win_FILE_SHARE_READ + Win_FILE_SHARE_WRITE,
+                              Security_Attrs'Address,
+                              Win_CREATE_ALWAYS,
+                              Win_FILE_ATTRIBUTE_NORMAL,
+                              System.Null_Address);
       Free (C_Path);
-      if H = Invalid then
+      if Handle = Invalid then
          raise Build_Error with "CreateFile failed for: " & Path;
       end if;
-      return H;
+      return Handle;
    end Win32_Open_For_Redirect;
 
-   --  Spawn a child via CreateProcessA.  Mirrors Posix_Spawn's contract:
-   --  returns the process handle (for async waits) when Wait_For_Exit is
-   --  False; otherwise waits, raises Build_Error on non-zero exit, and
-   --  returns Null_Address.
-   function Win32_Spawn
-     (Prog_Path     : String;
-      Args          : Argument_List;
-      Stdout_File   : String_Access;
-      Stderr_File   : String_Access;
-      Wait_For_Exit : Boolean) return System.Address
+   --  CreateProcessA counterpart of Posix_Spawn; same return contract.
+   function Win32_Spawn (Prog_Path     : String;
+                         Args          : Argument_List;
+                         Stdout_File   : String_Access;
+                         Stderr_File   : String_Access;
+                         Wait_For_Exit : Boolean) return System.Address
    is
       use Interfaces.C.Strings;
       use type Interfaces.C.int;
       use type Interfaces.C.unsigned;
-      Cmd_Line  : constant String := Build_Command_Line (Prog_Path, Args);
-      C_Prog    : chars_ptr := New_String (Prog_Path);
-      C_Cmd     : chars_ptr := New_String (Cmd_Line);
-      SI        : aliased Win_Startup_Info;
-      PI        : aliased Win_Process_Info;
-      Ok        : Win_BOOL;
-      Exit_Code : aliased Win_DWORD := 0;
-      Dummy_W   : Win_DWORD;
-      Dummy_B   : Win_BOOL;
-      Owned_Out : Boolean := False;
-      Owned_Err : Boolean := False;
+      Cmd_Line     : constant String := Build_Command_Line (Prog_Path, Args);
+      C_Prog       : chars_ptr := New_String (Prog_Path);
+      C_Cmd        : chars_ptr := New_String (Cmd_Line);
+      Startup_Info : aliased Win_Startup_Info;
+      Process_Info : aliased Win_Process_Info;
+      Result       : Win_BOOL;
+      Exit_Code    : aliased Win_DWORD := 0;
+      Owned_Out    : Boolean := False;
+      Owned_Err    : Boolean := False;
    begin
-      SI.Cb :=
-        Win_DWORD (Win_Startup_Info'Object_Size / System.Storage_Unit);
-      SI.Flags       := Win_STARTF_USESTDHANDLES;
-      SI.H_Std_Input := W_GetStdHandle (Win_STD_INPUT_HANDLE);
+      Startup_Info.Cb          := Win_DWORD (Win_Startup_Info'Object_Size / System.Storage_Unit);
+      Startup_Info.Flags       := Win_STARTF_USESTDHANDLES;
+      Startup_Info.H_Std_Input := W_GetStdHandle (Win_STD_INPUT_HANDLE);
 
       if Stdout_File /= null then
-         SI.H_Std_Output := Win32_Open_For_Redirect (Stdout_File.all);
+         Startup_Info.H_Std_Output := Win32_Open_For_Redirect (Stdout_File.all);
          Owned_Out := True;
       else
-         SI.H_Std_Output := W_GetStdHandle (Win_STD_OUTPUT_HANDLE);
+         Startup_Info.H_Std_Output := W_GetStdHandle (Win_STD_OUTPUT_HANDLE);
       end if;
 
       if Stderr_File /= null then
-         SI.H_Std_Error := Win32_Open_For_Redirect (Stderr_File.all);
+         Startup_Info.H_Std_Error := Win32_Open_For_Redirect (Stderr_File.all);
          Owned_Err := True;
       else
-         SI.H_Std_Error := W_GetStdHandle (Win_STD_ERROR_HANDLE);
+         Startup_Info.H_Std_Error := W_GetStdHandle (Win_STD_ERROR_HANDLE);
       end if;
 
-      Ok := W_CreateProcess
-              (App_Name        => To_Address (C_Prog),
-               Cmd_Line        => To_Address (C_Cmd),
-               Proc_Attrs      => System.Null_Address,
-               Thread_Attrs    => System.Null_Address,
-               Inherit_Handles => Win_TRUE,
-               Creation_Flags  => 0,
-               Environment     => System.Null_Address,
-               Current_Dir     => System.Null_Address,
-               Startup_Info    => SI'Address,
-               Process_Info    => PI'Address);
+      Result := W_CreateProcess (App_Name        => To_Address (C_Prog),
+                                 Cmd_Line        => To_Address (C_Cmd),
+                                 Proc_Attrs      => System.Null_Address,
+                                 Thread_Attrs    => System.Null_Address,
+                                 Inherit_Handles => Win_TRUE,
+                                 Creation_Flags  => 0,
+                                 Environment     => System.Null_Address,
+                                 Current_Dir     => System.Null_Address,
+                                 Startup_Info    => Startup_Info'Address,
+                                 Process_Info    => Process_Info'Address);
 
-      --  Parent no longer needs the redirection handles; the child has its
-      --  own copies after CreateProcess.
+      --  Child has its own copies of the redirection handles after CreateProcess.
       if Owned_Out then
-         Dummy_B := W_CloseHandle (SI.H_Std_Output);
+         Ignore (W_CloseHandle (Startup_Info.H_Std_Output));
       end if;
       if Owned_Err then
-         Dummy_B := W_CloseHandle (SI.H_Std_Error);
+         Ignore (W_CloseHandle (Startup_Info.H_Std_Error));
       end if;
 
       Free (C_Prog);
       Free (C_Cmd);
 
-      if Ok = 0 then
+      if Win_Is_Error (Result) then
          Log ("ERRO", "CreateProcess failed for: " & Prog_Path);
          raise Build_Error with "CreateProcess failed for: " & Prog_Path;
       end if;
 
       --  We don't need the main thread handle.
-      Dummy_B := W_CloseHandle (PI.H_Thread);
+      Ignore (W_CloseHandle (Process_Info.H_Thread));
 
       if not Wait_For_Exit then
-         return PI.H_Process;
+         return Process_Info.H_Process;
       end if;
 
-      Dummy_W := W_WaitForSingleObject (PI.H_Process, Win_INFINITE);
-      Dummy_B := W_GetExitCodeProcess (PI.H_Process, Exit_Code'Access);
-      Dummy_B := W_CloseHandle (PI.H_Process);
+      Ignore (W_WaitForSingleObject (Process_Info.H_Process, Win_INFINITE));
+      Ignore (W_GetExitCodeProcess (Process_Info.H_Process, Exit_Code'Access));
+      Ignore (W_CloseHandle (Process_Info.H_Process));
 
-      if Exit_Code /= 0 then
-         declare
-            Code : constant Integer := Integer (Exit_Code);
-         begin
-            Log ("ERRO", "command exited with status" & Code'Image);
-            raise Build_Error
-              with "command failed (exit" & Code'Image & ")";
-         end;
-      end if;
-
+      Check_Exit (Integer (Exit_Code));
       return System.Null_Address;
    end Win32_Spawn;
 
    --  Wait for a previously-spawned Win32 process handle and return its
    --  exit code.  Closes the handle.
    function Win32_Wait (Pid_Addr : System.Address) return Integer is
-      Dummy_W   : Win_DWORD;
-      Dummy_B   : Win_BOOL;
       Exit_Code : aliased Win_DWORD := 0;
    begin
-      Dummy_W := W_WaitForSingleObject (Pid_Addr, Win_INFINITE);
-      Dummy_B := W_GetExitCodeProcess (Pid_Addr, Exit_Code'Access);
-      Dummy_B := W_CloseHandle (Pid_Addr);
+      Ignore (W_WaitForSingleObject (Pid_Addr, Win_INFINITE));
+      Ignore (W_GetExitCodeProcess (Pid_Addr, Exit_Code'Access));
+      Ignore (W_CloseHandle (Pid_Addr));
       return Integer (Exit_Code);
    end Win32_Wait;
 
@@ -905,43 +790,40 @@ package body No_Build is
    --  Command execution (public API)
    --------------------------------------------------------------------------
 
-   procedure Cmd
-     (Program : String;
-      Args    : Argument_List;
-      Redir   : Redirect)
-   is
-      Display   : constant String := Display_Of (Program, Args);
-      Prog_Path : constant String := Resolve_Program (Program, Display);
-      Dummy     : System.Address;
+   --  Platform-dispatching spawn used by Cmd, Cmd_Async, and Go_Rebuild_Urself(TM).
+   function Spawn (Prog_Path     : String;
+                   Args          : Argument_List;
+                   Redir         : Redirect;
+                   Wait_For_Exit : Boolean) return System.Address is
    begin
       case Platform is
          when Linux | MacOS =>
-            Dummy := Posix_Spawn
-              (Prog_Path, Args,
-               Stdout_File   => Redir.Stdout,
-               Stderr_File   => Redir.Stderr,
-               Wait_For_Exit => True);
+            return Posix_Spawn
+              (Prog_Path, Args, Redir.Stdout, Redir.Stderr, Wait_For_Exit);
          when Windows =>
-            Dummy := Win32_Spawn
-              (Prog_Path, Args,
-               Stdout_File   => Redir.Stdout,
-               Stderr_File   => Redir.Stderr,
-               Wait_For_Exit => True);
+            return Win32_Spawn
+              (Prog_Path, Args, Redir.Stdout, Redir.Stderr, Wait_For_Exit);
       end case;
+   end Spawn;
+
+   procedure Cmd (Program : String;
+                  Args    : Argument_List := No_Args;
+                  Redir   : Redirect      := No_Redirect)
+   is
+      Display   : constant String := Display_Of (Program, Args);
+      Prog_Path : constant String := Resolve_Program (Program, Display);
+   begin
+      Ignore (Spawn (Prog_Path, Args, Redir, Wait_For_Exit => True));
    end Cmd;
 
-   function Capture
-     (Program : String;
-      Args    : Argument_List := (1 .. 0 => null)) return String
-   is
+   function Capture (Program : String; Args : Argument_List := No_Args) return String is
       Tmp_Path : constant String := ".no_build_capture";
-      Redir    : constant Redirect :=
-        (Stdout => new String'(Tmp_Path), Stderr => null);
+      Redir    : constant Redirect := (Stdout => new String'(Tmp_Path), Stderr => null);
 
       function Trim (S : String) return String is
-         function Is_WS (C : Character) return Boolean is
-           (C = ' ' or else C = ASCII.HT
-              or else C = ASCII.LF or else C = ASCII.CR);
+         function Is_WS (C : Character) return Boolean is (C = ' ' or else C = ASCII.HT
+                                                                   or else C = ASCII.LF
+                                                                   or else C = ASCII.CR);
          First : Natural := S'First;
          Last  : Natural := S'Last;
       begin
@@ -971,34 +853,13 @@ package body No_Build is
 
    function Cmd_Async
      (Program : String;
-      Args    : Argument_List;
-      Redir   : Redirect := No_Redirect) return Proc
+      Args    : Argument_List := No_Args;
+      Redir   : Redirect      := No_Redirect) return Proc
    is
       Display   : constant String := Display_Of (Program, Args);
       Prog_Path : constant String := Resolve_Program (Program, Display);
-      Pid_Addr  : System.Address;
    begin
-      case Platform is
-         when Linux | MacOS =>
-            Pid_Addr := Posix_Spawn
-              (Prog_Path, Args,
-               Stdout_File   => Redir.Stdout,
-               Stderr_File   => Redir.Stderr,
-               Wait_For_Exit => False);
-         when Windows =>
-            Pid_Addr := Win32_Spawn
-              (Prog_Path, Args,
-               Stdout_File   => Redir.Stdout,
-               Stderr_File   => Redir.Stderr,
-               Wait_For_Exit => False);
-      end case;
-      return (Pid => Pid_Addr);
-   end Cmd_Async;
-
-   function Cmd_Async (Program : String) return Proc is
-      Empty : constant Argument_List (1 .. 0) := (others => null);
-   begin
-      return Cmd_Async (Program, Empty);
+      return (Pid => Spawn (Prog_Path, Args, Redir, Wait_For_Exit => False));
    end Cmd_Async;
 
    function Wait_For (Pid : System.Address) return Integer is
@@ -1017,8 +878,7 @@ package body No_Build is
       end if;
    end Wait;
 
-   procedure Append (List : in out Proc_List; P : Proc) is
-   begin
+   procedure Append (List : in out Proc_List; P : Proc) is begin
       if List.Count >= Max_Procs then
          raise Build_Error with "Proc_List is full (max" & Max_Procs'Image & ")";
       end if;
@@ -1058,80 +918,56 @@ package body No_Build is
 
    Active_Compiler : Ada_Compiler := Gnatmake_Compiler;
 
-   procedure Set_Compiler (C : Ada_Compiler) is
-   begin
+   procedure Set_Compiler (C : Ada_Compiler) is begin
       Active_Compiler := C;
    end Set_Compiler;
 
-   procedure Compile_Program
-     (Source  : String;
-      Output  : String        := "";
-      Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null))
+   procedure Compile_Program (Source  : String;
+                              Output  : String        := "";
+                              Obj_Dir : String        := "";
+                              Extra   : Argument_List := No_Args)
    is
-      C        : Ada_Compiler renames Active_Compiler;
-      Defaults : constant Argument_List := C.Compile_Flags.all;
+      C    : Ada_Compiler renames Active_Compiler;
+      Args : Argument_List_Access := new Argument_List'(1 => S (Source));
+
+      procedure Append_Pair (Flag, Value : String_Access) is
+         New_Args : constant Argument_List_Access := new Argument_List'(Args.all & Flag & Value);
+      begin
+         Args := New_Args;
+      end Append_Pair;
    begin
       if Obj_Dir /= "" then
          Make_Dirs (Obj_Dir);
+         Append_Pair (C.Obj_Flag, S (Obj_Dir));
+      end if;
+      if Output /= "" then
+         Append_Pair (C.Out_Flag, S (Output));
       end if;
 
-      if Output = "" and then Obj_Dir = "" then
-         Cmd (C.Executable.all,
-              Argument_List'(1 => S (Source)) & Defaults & Extra);
-      elsif Output = "" then
-         Cmd (C.Executable.all,
-              Argument_List'(S (Source), C.Obj_Flag, S (Obj_Dir))
-              & Defaults & Extra);
-      elsif Obj_Dir = "" then
-         Cmd (C.Executable.all,
-              Argument_List'(S (Source), C.Out_Flag, S (Output))
-              & Defaults & Extra);
-      else
-         Cmd (C.Executable.all,
-              Argument_List'(S (Source),
-                             C.Obj_Flag, S (Obj_Dir),
-                             C.Out_Flag, S (Output))
-              & Defaults & Extra);
-      end if;
+      Cmd (C.Executable.all, Args.all & C.Compile_Flags.all & Extra);
    end Compile_Program;
 
-   --------------------------------------------------------------------------
-   --  Compile (compile-only, no link)
-   --------------------------------------------------------------------------
-
-   procedure Compile
-     (Source  : String;
-      Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null))
-   is
-   begin
-      Compile_Program
-        (Source, Obj_Dir => Obj_Dir,
-         Extra => Argument_List'(1 => Active_Compiler.Compile_Only_Flag)
-                  & Extra);
+   procedure Compile (Source  : String;
+                      Obj_Dir : String        := "";
+                      Extra   : Argument_List := No_Args)
+   is begin
+      Compile_Program (Source, Obj_Dir => Obj_Dir,
+         Extra => Argument_List'(1 => Active_Compiler.Compile_Only_Flag) & Extra);
    end Compile;
 
-   --------------------------------------------------------------------------
-   --  Build_Lib_Objects: compile each .adb in Src_Dir, collect .o paths.
-   --------------------------------------------------------------------------
-
-   procedure Build_Lib_Objects
-     (Src_Dir : String;
-      Obj_Dir : String;
-      PIC     : Boolean;
-      Extra   : Argument_List;
-      Objects : out Argument_List;
-      N_Obj   : out Natural)
+   --  Compile each .adb in Src_Dir; return the resulting .o paths.
+   function Build_Lib_Objects (Src_Dir : String;
+                               Obj_Dir : String;
+                               PIC     : Boolean;
+                               Extra   : Argument_List) return Argument_List
    is
       use Ada.Directories;
-      Eff_Obj  : constant String := (if Obj_Dir /= "" then Obj_Dir else ".");
-      Search   : Search_Type;
-      Dir_Ent  : Directory_Entry_Type;
-      Flags    : constant Argument_List :=
-        (if PIC then Active_Compiler.PIC_Flags.all & Extra else Extra);
+      Eff_Obj : constant String := (if Obj_Dir /= "" then Obj_Dir else ".");
+      Flags   : constant Argument_List := (if PIC then Active_Compiler.PIC_Flags.all & Extra else Extra);
+      Search  : Search_Type;
+      Dir_Ent : Directory_Entry_Type;
+      Acc     : Argument_List_Access := new Argument_List'(No_Args);
    begin
-      N_Obj := 0;
       if Obj_Dir /= "" then
          Make_Dirs (Obj_Dir);
       end if;
@@ -1144,73 +980,59 @@ package body No_Build is
          begin
             if Ends_With (Name, ".adb") then
                Compile (Src_Dir / Name, Obj_Dir => Obj_Dir, Extra => Flags);
-               N_Obj := N_Obj + 1;
-               Objects (N_Obj) := S (Eff_Obj / No_Ext (Name) & ".o");
+               Acc := new Argument_List'
+                        (Acc.all & S (Eff_Obj / No_Ext (Name) & ".o"));
             end if;
          end;
       end loop;
       End_Search (Search);
+      return Acc.all;
    end Build_Lib_Objects;
 
-   procedure Build_Static_Lib
-     (Src_Dir : String;
-      Output  : String;
-      Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null))
+   procedure Build_Static_Lib (Src_Dir : String;
+                               Output  : String;
+                               Obj_Dir : String        := "";
+                               Extra   : Argument_List := No_Args)
    is
       C       : Ada_Compiler renames Active_Compiler;
-      Objects : Argument_List (1 .. 256) := (others => null);
-      N_Obj   : Natural;
+      Objects : constant Argument_List := Build_Lib_Objects (Src_Dir, Obj_Dir, PIC => False, Extra => Extra);
    begin
-      Build_Lib_Objects (Src_Dir, Obj_Dir, PIC => False,
-                         Extra => Extra, Objects => Objects, N_Obj => N_Obj);
-      if N_Obj > 0 then
+      if Objects'Length > 0 then
          Cmd (C.Static_Archiver.all,
               C.Static_Archiver_Flags.all
               & Argument_List'(1 => S (Output))
-              & Objects (1 .. N_Obj));
+              & Objects);
       end if;
    end Build_Static_Lib;
 
-   procedure Build_Shared_Lib
-     (Src_Dir : String;
-      Output  : String;
-      Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null))
+   procedure Build_Shared_Lib (Src_Dir : String;
+                               Output  : String;
+                               Obj_Dir : String        := "";
+                               Extra   : Argument_List := No_Args)
    is
       C       : Ada_Compiler renames Active_Compiler;
-      Objects : Argument_List (1 .. 256) := (others => null);
-      N_Obj   : Natural;
+      Objects : constant Argument_List := Build_Lib_Objects (Src_Dir, Obj_Dir, PIC => True, Extra => Extra);
 
-      --  Resolve the Ada runtime by invoking Shared_Runtime_Probe (if set)
-      --  and treating its return value as a single positional link arg.
-      --  Lets the linker find e.g. libgnat without a host-specific -L.
-      function Probe_Args return Argument_List is
-      begin
+      --  Shared_Runtime_Probe's return value as a single positional arg.
+      function Probe_Args return Argument_List is begin
          if C.Shared_Runtime_Probe = null then
-            return (1 .. 0 => null);
+            return No_Args;
          end if;
          return (1 => S (C.Shared_Runtime_Probe.all));
       end Probe_Args;
    begin
-      Build_Lib_Objects (Src_Dir, Obj_Dir, PIC => True,
-                         Extra => Extra, Objects => Objects, N_Obj => N_Obj);
-      if N_Obj > 0 then
+      if Objects'Length > 0 then
          Cmd (C.Shared_Linker.all,
               C.Shared_Flags.all
               & Argument_List'(C.Shared_Out_Flag, S (Output))
-              & Objects (1 .. N_Obj)
+              & Objects
               & Probe_Args);
       end if;
    end Build_Shared_Lib;
 
    function Find_Gnat_Runtime return String is
-      Libgcc  : constant String := Capture
-        ("gcc", Argument_List'(1 => S ("-print-libgcc-file-name")));
-      --  Strip the libgcc.a filename to get the gcc install dir, then
-      --  look for the sibling adalib/.  Works for any GNAT layout where
-      --  the runtime lives next to libgcc.
-      Slash : Natural := 0;
+      Libgcc : constant String := Capture ("gcc", Argument_List'(1 => S ("-print-libgcc-file-name")));
+      Slash  : Natural := 0;
    begin
       for I in reverse Libgcc'Range loop
          if Libgcc (I) = '/' or else Libgcc (I) = '\' then
@@ -1219,15 +1041,14 @@ package body No_Build is
          end if;
       end loop;
       if Slash = 0 then
-         return Libgcc;  --  no separator found; hand back as-is
+         return Libgcc;
       end if;
       declare
          Adalib : constant String := Libgcc (Libgcc'First .. Slash) & "adalib/";
          Pic    : constant String := Adalib & "libgnat_pic.a";
       begin
-         --  Linux GNAT ships a PIC variant for shared-lib use; everywhere
-         --  else (Windows MinGW, macOS) the plain libgnat.a links into a
-         --  shared object just fine.
+         --  Linux GNAT ships a PIC variant; Windows MinGW and macOS link
+         --  the plain libgnat.a into a shared object fine.
          if Path_Exists (Pic) then
             return Pic;
          end if;
@@ -1240,12 +1061,9 @@ package body No_Build is
    --------------------------------------------------------------------------
 
    function "/" (Left, Right : String) return String is
-      --  Use the native separator: Windows tools accept '/' in many places
-      --  but mixing styles in a single absolute path (e.g.
-      --  "C:\Windows\System32/cmd.exe") trips some Win32 lookups.  Accept
-      --  either separator at Left's tail to avoid doubling up.
-      Sep : constant Character :=
-        (if Platform = Windows then '\' else '/');
+      --  Native separator (Windows tools tolerate '/', but mixing styles in
+      --  a single path can trip some Win32 lookups).
+      Sep : constant Character := (if Platform = Windows then '\' else '/');
    begin
       if Left = "" then
          return Right;
@@ -1256,30 +1074,27 @@ package body No_Build is
       end if;
    end "/";
 
-   function No_Ext (Path : String) return String is
-   begin
+   function No_Ext (Path : String) return String is begin
       for I in reverse Path'Range loop
          if Path (I) = '.' then
             return Path (Path'First .. I - 1);
-         elsif Path (I) = '/' then
+         elsif Path (I) = '/' or else Path (I) = '\' then
             exit;
          end if;
       end loop;
       return Path;
    end No_Ext;
 
-   function Ends_With (Str, Suffix : String) return Boolean is
-   begin
+   function Ends_With (Str, Suffix : String) return Boolean is begin
       if Suffix'Length > Str'Length then
          return False;
       end if;
       return Str (Str'Last - Suffix'Length + 1 .. Str'Last) = Suffix;
    end Ends_With;
 
-   function Base_Name (Path : String) return String is
-   begin
+   function Base_Name (Path : String) return String is begin
       for I in reverse Path'Range loop
-         if Path (I) = '/' then
+         if Path (I) = '/' or else Path (I) = '\' then
             return Path (I + 1 .. Path'Last);
          end if;
       end loop;
@@ -1290,8 +1105,7 @@ package body No_Build is
    --  Filesystem predicates
    --------------------------------------------------------------------------
 
-   function Path_Exists (Path : String) return Boolean is
-   begin
+   function Path_Exists (Path : String) return Boolean is begin
       return Ada.Directories.Exists (Path);
    end Path_Exists;
 
@@ -1305,8 +1119,7 @@ package body No_Build is
    --  Filesystem mutations
    --------------------------------------------------------------------------
 
-   procedure Make_Dir (Path : String) is
-   begin
+   procedure Make_Dir (Path : String) is begin
       if Ada.Directories.Exists (Path) then
          Log ("WARN", "directory already exists: " & Path);
       else
@@ -1315,11 +1128,12 @@ package body No_Build is
       end if;
    end Make_Dir;
 
-   procedure Make_Dirs (Path : String) is
-   begin
+   procedure Make_Dirs (Path : String) is begin
       Log ("MKDIRS", Path);
       for I in Path'Range loop
-         if Path (I) = '/' and then I > Path'First then
+         if (Path (I) = '/' or else Path (I) = '\')
+           and then I > Path'First
+         then
             declare
                Part : constant String := Path (Path'First .. I - 1);
             begin
@@ -1336,36 +1150,28 @@ package body No_Build is
 
    procedure Rename_Path (Old_Path, New_Path : String) is
       use Interfaces.C.Strings;
-      use type Interfaces.C.int;
       use type Interfaces.C.unsigned;
 
-      --  Native rename succeeds even when the source is a running
-      --  executable (Windows holds an exclusive handle that blocks delete
-      --  but not rename), which is exactly what Go_Rebuild_Urself needs.
-      --  Copy+delete is kept as a fallback so cross-filesystem renames
-      --  (POSIX EXDEV) still work.
+      --  Native rename can move a running .exe (Windows blocks delete, not
+      --  rename) — needed by Go_Rebuild_Urself(TM).  Copy+delete fallback below
+      --  handles cross-filesystem renames (POSIX EXDEV).
       function Native_Rename return Boolean is
          Old_C : chars_ptr := New_String (Old_Path);
          New_C : chars_ptr := New_String (New_Path);
-         OK    : Boolean   := False;
+         Ok    : Boolean   := False;
       begin
          case Platform is
             when Linux | MacOS =>
-               if C_Rename /= null then
-                  OK := C_Rename
-                          (To_Address (Old_C), To_Address (New_C)) = 0;
-               end if;
+               Ok := Is_Ok (C_Rename (To_Address (Old_C),
+                                      To_Address (New_C)));
             when Windows =>
-               if W_MoveFileEx /= null then
-                  OK := W_MoveFileEx
-                          (To_Address (Old_C), To_Address (New_C),
-                           Win_MOVEFILE_REPLACE_EXISTING
-                             or Win_MOVEFILE_COPY_ALLOWED) /= 0;
-               end if;
+               Ok := Win_Is_Ok (W_MoveFileEx (To_Address (Old_C),
+                                              To_Address (New_C),
+                                              Win_MOVEFILE_REPLACE_EXISTING or Win_MOVEFILE_COPY_ALLOWED));
          end case;
          Free (Old_C);
          Free (New_C);
-         return OK;
+         return Ok;
       end Native_Rename;
    begin
       Log ("RENAME", Old_Path & " -> " & New_Path);
@@ -1373,10 +1179,8 @@ package body No_Build is
          return;
       end if;
 
-      --  Fallback: copy then delete.  Works across filesystems but cannot
-      --  delete a running .exe on Windows.  preserve=all_attributes keeps
-      --  the executable bit (GNAT extension; harmless on other toolchains
-      --  that ignore unknown Form strings).
+      --  Fallback: copy + delete.  Form => preserve=all_attributes is a
+      --  GNAT extension that keeps the executable bit; harmless elsewhere.
       if Is_Dir (Old_Path) then
          Copy_Dir (Old_Path, New_Path);
          Ada.Directories.Delete_Tree (Old_Path);
@@ -1392,8 +1196,7 @@ package body No_Build is
          raise Build_Error with "rename failed: " & Old_Path;
    end Rename_Path;
 
-   procedure Remove_Path (Path : String) is
-   begin
+   procedure Remove_Path (Path : String) is begin
       Log ("RM", Path);
       if Is_Dir (Path) then
          Ada.Directories.Delete_Tree (Path);
@@ -1425,7 +1228,7 @@ package body No_Build is
      return Boolean is
    begin
       for I of Inputs loop
-         if I /= null and then Is_Newer (I.all, Output) then
+         if Is_Newer (I.all, Output) then
             return True;
          end if;
       end loop;
@@ -1436,10 +1239,9 @@ package body No_Build is
    --  Directory iteration
    --------------------------------------------------------------------------
 
-   procedure For_Each_File
-     (Dir     : String;
-      Process : not null access procedure (File_Name : String);
-      Suffix  : String := "")
+   procedure For_Each_File (Dir     : String;
+                            Process : not null access procedure (File_Name : String);
+                            Suffix  : String := "")
    is
       use Ada.Directories;
       Search  : Search_Type;
@@ -1461,10 +1263,9 @@ package body No_Build is
       End_Search (Search);
    end For_Each_File;
 
-   function Walk_Dir_Rec
-     (Dir   : String;
-      Func  : Walk_Func;
-      Depth : Natural) return Boolean
+   function Walk_Dir_Rec (Dir   : String;
+                          Func  : Walk_Func;
+                          Depth : Natural) return Boolean
    is
       use Ada.Directories;
       Search  : Search_Type;
@@ -1518,22 +1319,19 @@ package body No_Build is
       return True;
    end Walk_Dir_Rec;
 
-   procedure Walk_Dir (Root : String; Func : Walk_Func) is
-      Dummy : Boolean;
-   begin
-      Dummy := Walk_Dir_Rec (Root, Func, 0);
+   procedure Walk_Dir (Root : String; Func : Walk_Func) is begin
+      Ignore (Walk_Dir_Rec (Root, Func, 0));
    end Walk_Dir;
 
    --------------------------------------------------------------------------
    --  Copy_File / Copy_Dir
    --------------------------------------------------------------------------
 
-   procedure Copy_File (Src, Dst : String) is
-   begin
+   procedure Copy_File (Src, Dst : String) is begin
       Log ("CP", Src & " -> " & Dst);
-      Ada.Directories.Copy_File
-        (Source_Name => Src, Target_Name => Dst,
-         Form        => "preserve=all_attributes");
+      Ada.Directories.Copy_File (Source_Name => Src,
+                                 Target_Name => Dst,
+                                 Form        => "preserve=all_attributes");
    end Copy_File;
 
    procedure Copy_Dir (Src, Dst : String) is
@@ -1555,11 +1353,9 @@ package body No_Build is
                      Dst_Path : constant String := To   / Name;
                   begin
                      case Ada.Directories.Kind (Dir_Ent) is
-                        when Ada.Directories.Directory =>
-                           Recurse (Src_Path, Dst_Path);
-                        when Ada.Directories.Ordinary_File =>
-                           No_Build.Copy_File (Src_Path, Dst_Path);
-                        when Ada.Directories.Special_File => null;
+                        when Ada.Directories.Directory     => Recurse (Src_Path, Dst_Path);
+                        when Ada.Directories.Ordinary_File => No_Build.Copy_File (Src_Path, Dst_Path);
+                        when Ada.Directories.Special_File  => null;
                      end case;
                   end;
                end if;
@@ -1609,13 +1405,11 @@ package body No_Build is
          raise Build_Error with "cannot write file: " & Path;
    end Write_File;
 
-   function Get_Current_Dir return String is
-   begin
+   function Get_Current_Dir return String is begin
       return Ada.Directories.Current_Directory;
    end Get_Current_Dir;
 
-   procedure Set_Current_Dir (Path : String) is
-   begin
+   procedure Set_Current_Dir (Path : String) is begin
       Log ("CD", Path);
       Ada.Directories.Set_Directory (Path);
    exception
@@ -1630,27 +1424,19 @@ package body No_Build is
    procedure Info  (Msg : String) is begin Log ("INFO", Msg); end Info;
    procedure Warn  (Msg : String) is begin Log ("WARN", Msg); end Warn;
    procedure Erro  (Msg : String) is begin Log ("ERRO", Msg); end Erro;
-
-   procedure Panic (Msg : String) is
-   begin
-      Log ("ERRO", Msg);
-      raise Build_Error with Msg;
-   end Panic;
+   procedure Panic (Msg : String) is begin Log ("ERRO", Msg); raise Build_Error with Msg; end Panic;
 
    --------------------------------------------------------------------------
    --  Go Rebuild Urself(TM)
    --------------------------------------------------------------------------
 
-   procedure Go_Rebuild_Urself
-     (Binary_Path : String;
-      Source_Path : String;
-      Obj_Dir     : String        := "";
-      Extra       : Argument_List := (1 .. 0 => null))
+   procedure Go_Rebuild_Urself (Binary_Path : String;
+                                Source_Path : String;
+                                Obj_Dir     : String        := "";
+                                Extra       : Argument_List := No_Args)
    is
-      --  On Windows gnatmake produces Binary_Path & ".exe" when the caller
-      --  passes the unsuffixed name, so normalize here for the timestamp
-      --  check, rename-as-backup, and re-exec.  Compile_Program still gets
-      --  the original Binary_Path; gnatmake handles the suffix itself.
+      --  On Windows gnatmake adds .exe; Compile_Program still gets the raw
+      --  Binary_Path, but the timestamp / backup / re-exec need the suffix.
       Bin : constant String :=
         (if Platform = Windows and then not Ends_With (Binary_Path, ".exe")
          then Binary_Path & ".exe"
@@ -1661,10 +1447,8 @@ package body No_Build is
          return;
       end if;
 
-      --  A previous rebuild may have left a .old behind: on Windows the
-      --  running exe owns its file and we can't delete it until after the
-      --  re-exec replaces the process, by which time we're gone.  Clean
-      --  it up here on the next invocation, when nothing is holding it.
+      --  Sweep up any .old from a previous run: on Windows the running exe
+      --  owns its file until exec, so the previous rebuild couldn't delete it.
       if Path_Exists (Old_Binary) then
          begin
             Remove_Path (Old_Binary);
@@ -1691,9 +1475,8 @@ package body No_Build is
                raise;
          end;
 
-         --  Best-effort delete: on Windows the .old file is the still-
-         --  running process and the OS blocks delete.  The startup sweep
-         --  above will pick it up on the next run.
+         --  Best-effort: Windows blocks delete of the running exe; the
+         --  next-run sweep above catches it.
          if Path_Exists (Old_Binary) then
             begin
                Remove_Path (Old_Binary);
@@ -1703,45 +1486,26 @@ package body No_Build is
          end if;
 
          declare
-            Args : Argument_List (1 .. Ada.Command_Line.Argument_Count);
+            Args : Argument_List_Access := new Argument_List'(No_Args);
          begin
-            for I in Args'Range loop
-               Args (I) := new String'(Ada.Command_Line.Argument (I));
+            for I in 1 .. Ada.Command_Line.Argument_Count loop
+               Args := new Argument_List' (Args.all & S (Ada.Command_Line.Argument (I)));
             end loop;
             Info ("re-executing: " & Bin);
-            declare
-               Dummy : System.Address;
-            begin
-               case Platform is
-                  when Linux | MacOS =>
-                     Dummy := Posix_Spawn
-                       (Bin, Args,
-                        Stdout_File   => null,
-                        Stderr_File   => null,
-                        Wait_For_Exit => True);
-                     --  Exit this (old) process; the re-execed build ran.
-                     C_Exit (0);
-                  when Windows =>
-                     Dummy := Win32_Spawn
-                       (Bin, Args,
-                        Stdout_File   => null,
-                        Stderr_File   => null,
-                        Wait_For_Exit => True);
-                     W_ExitProcess (0);
-               end case;
-            end;
+            Ignore (Spawn (Bin, Args.all, No_Redirect, Wait_For_Exit => True));
+            --  Exit this (old) process; the re-execed build ran.
+            case Platform is
+               when Linux | MacOS => C_Exit (0);
+               when Windows       => W_ExitProcess (0);
+            end case;
          end;
       end if;
    end Go_Rebuild_Urself;
 
 begin
-   --  Load platform-appropriate process-management symbols at elaboration
-   --  time.  This runs after Detect_Platform (which initializes the Platform
-   --  constant in the spec), so we know which platform we're on.
+   --  Elaboration runs after Platform is set in the spec.
    case Platform is
-      when Linux | MacOS =>
-         Load_Posix_Symbols;
-      when Windows =>
-         Load_Win32_Symbols;
+      when Linux | MacOS => Load_Posix_Symbols;
+      when Windows       => Load_Win32_Symbols;
    end case;
 end No_Build;

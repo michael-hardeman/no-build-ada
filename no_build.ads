@@ -1,13 +1,5 @@
---  no_build.ads -- Ada port of the nobuild build-system library
---  https://github.com/tsoding/nobuild
---
---  Usage
---  -----
---  1. Place no_build.ads and no_build.adb next to your build script.
---  2. Write a build.adb that withs No_Build and contains a main procedure.
---  3. Bootstrap once with your Ada compiler of choice.
---  4. From then on just run ./build -- it will recompile itself if build.adb
---     has been modified (Go_Rebuild_Urself technology).
+--  no_build.ads -- Ada port of https://github.com/tsoding/nob.h.  
+--  See README.md for usage.
 
 with System;
 with Ada.Directories;
@@ -26,62 +18,33 @@ package No_Build is
 
    type Platform_Kind is (Linux, MacOS, Windows);
 
+   --  Expression function (not body-side) so Platform's elaboration can
+   --  call it.  WINDIR is Windows-only; /usr/bin/sw_vers ships on macOS only.
    function Detect_Platform return Platform_Kind is
      (if Ada.Environment_Variables.Exists ("WINDIR") then Windows
-      --  WINDIR is set on every Windows installation and never on POSIX.
       elsif Ada.Directories.Exists ("/usr/bin/sw_vers") then MacOS
-      --  sw_vers ships with every macOS install and is absent on Linux.
       else Linux);
-   --  Expression function so it can be called during spec elaboration to
-   --  initialise Platform without tripping the access-before-elaboration
-   --  check.
 
    Platform : constant Platform_Kind := Detect_Platform;
-   --  Package-wide constant; use this instead of per-call OS checks.
+   --  Use this instead of per-call OS checks.
 
    --------------------------------------------------------------------------
-   --  Argument-list helpers
-   --
-   --  String_Access is a heap-allocated string.  Argument_List is an array
-   --  of String_Access values.  Use S("text") to allocate individual strings,
-   --  then build lists with Ada array aggregates and & concatenation, e.g.:
-   --
-   --    Cmd ("gnatmake", (S ("main.adb"), S ("-O2")));
-   --    Cmd ("gnatmake", S ("main.adb") & Extra_Flags);
+   --  Argument-list helpers.  Build lists with aggregates / &, allocating
+   --  each string with S, e.g. Cmd ("gnatmake", (S ("main.adb"), S ("-O2"))).
    --------------------------------------------------------------------------
 
    type String_Access is access String;
-   type Argument_List is array (Positive range <>) of String_Access;
+   type Argument_List is
+     array (Positive range <>) of not null String_Access;
    type Argument_List_Access is access Argument_List;
 
-   function S (Str : String) return String_Access;
-   --  Heap-allocate Str; convenience for building Argument_List literals.
+   function S (Str : String) return not null String_Access;
+
+   --  Empty argument list.
+   No_Args : constant Argument_List := (1 .. 0 => new String'(""));
 
    --------------------------------------------------------------------------
    --  Command execution
-   --------------------------------------------------------------------------
-
-   procedure Cmd (Program : String; Args : Argument_List);
-   --  Locate Program on PATH, run it with Args, and wait for it to finish.
-   --  Prints "[CMD] program args..." to stderr before executing.
-   --  Raises Build_Error if the program is not found or exits non-zero.
-
-   procedure Cmd (Program : String);
-   --  Run Program with no arguments.
-
-   procedure Sh (Command : String);
-   --  Run Command via the platform shell (/bin/sh on POSIX, cmd.exe on
-   --  Windows).  The two shells do NOT share syntax, so Command is not
-   --  portable -- expect to branch on Platform when using shell features.
-   --  Known gotchas on cmd.exe:
-   --    * single quotes ('foo') are literal, not string delimiters
-   --    * '!' may trigger delayed expansion if it's enabled
-   --    * paths in piped sub-commands prefer backslashes
-   --  For portable command execution, prefer Cmd (which uses CreateProcess
-   --  / posix_spawn directly and avoids the shell entirely).
-
-   --------------------------------------------------------------------------
-   --  I/O redirection
    --------------------------------------------------------------------------
 
    type Redirect is record
@@ -93,13 +56,21 @@ package No_Build is
 
    procedure Cmd
      (Program : String;
-      Args    : Argument_List;
-      Redir   : Redirect);
-   --  Like Cmd, but stdout and/or stderr are redirected to files.
+      Args    : Argument_List := No_Args;
+      Redir   : Redirect      := No_Redirect);
+   --  Locate Program on PATH, run it with Args, and wait for it to finish.
+   --  Prints "[CMD] program args..." to stderr before executing.
+   --  Optionally redirects stdout/stderr to files via Redir.
+   --  Raises Build_Error if the program is not found or exits non-zero.
+
+   procedure Sh (Command : String);
+   --  Run Command via the platform shell (/bin/sh on POSIX, cmd.exe on
+   --  Windows).  Shell syntax is not portable; for portable command
+   --  execution prefer Cmd, which avoids the shell entirely.
 
    function Capture
      (Program : String;
-      Args    : Argument_List := (1 .. 0 => null)) return String;
+      Args    : Argument_List := No_Args) return String;
    --  Run Program with Args, capture stdout, and return it trimmed of
    --  leading/trailing whitespace.  Stderr is inherited.  Raises Build_Error
    --  on non-zero exit or if the program cannot be located.
@@ -121,13 +92,10 @@ package No_Build is
 
    function Cmd_Async
      (Program : String;
-      Args    : Argument_List;
-      Redir   : Redirect := No_Redirect) return Proc;
+      Args    : Argument_List := No_Args;
+      Redir   : Redirect      := No_Redirect) return Proc;
    --  Spawn Program without waiting.  Returns a Proc handle.
    --  Raises Build_Error if the program is not found.
-
-   function Cmd_Async (Program : String) return Proc;
-   --  Spawn Program with no arguments.
 
    procedure Wait (P : Proc);
    --  Block until P exits.  Raises Build_Error on non-zero exit.
@@ -144,51 +112,43 @@ package No_Build is
    --  parallel jobs: spawn at most N_Procs commands before Wait_All.
 
    --------------------------------------------------------------------------
-   --  Ada compilation
-   --
-   --  Compile_Program and the higher-level Compile / Build_*_Lib helpers all
-   --  drive an Ada compiler described by an Ada_Compiler record.  The active
-   --  compiler defaults to Gnatmake_Compiler; call Set_Compiler with a
-   --  different descriptor to target ObjectAda, Janus, or any other Ada
-   --  toolchain that accepts a source file plus an output-name flag, an
-   --  object-directory flag, and a compile-only flag.
+   --  Ada compilation.  Compile_Program, Compile, and Build_*_Lib drive an
+   --  Ada toolchain described by an Ada_Compiler record (default
+   --  Gnatmake_Compiler).  Call Set_Compiler to retarget.
    --------------------------------------------------------------------------
 
    type Runtime_Probe_Func is access function return String;
-   --  Returns a single path or flag that Build_Shared_Lib appends verbatim
-   --  to the shared-link command line.  Used to resolve the Ada runtime
-   --  (e.g. libgnat) without hard-coding install paths.  Null disables.
+   --  Returns a single token Build_Shared_Lib appends verbatim to the
+   --  shared-link command line, e.g. a path to libgnat.  Null disables.
 
    function Find_Gnat_Runtime return String;
-   --  Default probe for the GNAT toolchain.  Captures
-   --  `gcc -print-libgcc-file-name` (always findable on a working gcc
-   --  install) and derives the sibling adalib/libgnat.a path.  Works on
-   --  any GNAT layout where adalib lives next to libgcc.
+   --  Default Runtime_Probe_Func for GNAT: derives the adalib/libgnat path
+   --  from `gcc -print-libgcc-file-name`.
 
    type Ada_Compiler is record
-      Executable            : String_Access;         --  e.g. "gnatmake"
-      Compile_Flags         : Argument_List_Access;  --  always-passed compile flags
-      PIC_Flags             : Argument_List_Access;  --  extra flags when compiling for a shared lib
-      Obj_Flag              : String_Access;         --  flag selecting the object dir
-      Out_Flag              : String_Access;         --  flag selecting the output binary
-      Compile_Only_Flag     : String_Access;         --  flag suppressing the link step
-      Shared_Linker         : String_Access;         --  driver used to link shared libs
-      Shared_Flags          : Argument_List_Access;  --  flags placed before Shared_Out_Flag
-      Shared_Out_Flag       : String_Access;         --  output flag for the shared linker
-      Shared_Runtime_Probe  : Runtime_Probe_Func;    --  see Runtime_Probe_Func; null = no probe
-      Static_Archiver       : String_Access;         --  archiver used for static libs
-      Static_Archiver_Flags : Argument_List_Access;  --  flags passed to the archiver
+      Executable            : not null String_Access;         --  e.g. "gnatmake"
+      Compile_Flags         : not null Argument_List_Access;  --  always passed
+      PIC_Flags             : not null Argument_List_Access;  --  added for shared libs
+      Obj_Flag              : not null String_Access;         --  selects obj dir
+      Out_Flag              : not null String_Access;         --  selects output binary
+      Compile_Only_Flag     : not null String_Access;         --  suppresses link
+      Shared_Linker         : not null String_Access;         --  shared-lib driver
+      Shared_Flags          : not null Argument_List_Access;  --  before Shared_Out_Flag
+      Shared_Out_Flag       : not null String_Access;         --  shared-lib output flag
+      Shared_Runtime_Probe  : Runtime_Probe_Func;             --  null = no probe
+      Static_Archiver       : not null String_Access;         --  static-lib archiver
+      Static_Archiver_Flags : not null Argument_List_Access;
    end record;
 
    Gnatmake_Compiler : constant Ada_Compiler :=
      (Executable            => new String'("gnatmake"),
-      Compile_Flags         => new Argument_List'(1 .. 0 => null),
+      Compile_Flags         => new Argument_List'(No_Args),
       PIC_Flags             =>
         (case Platform is
            when Linux | MacOS =>
              new Argument_List'(1 => new String'("-fPIC")),
            when Windows =>
-             new Argument_List'(1 .. 0 => null)),
+             new Argument_List'(No_Args)),
       Obj_Flag              => new String'("-D"),
       Out_Flag              => new String'("-o"),
       Compile_Only_Flag     => new String'("-c"),
@@ -205,33 +165,20 @@ package No_Build is
       Shared_Runtime_Probe  => Find_Gnat_Runtime'Access,
       Static_Archiver       => new String'("ar"),
       Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
-   --  Default compiler descriptor; matches the GNAT toolchain on the host.
-   --  Each of Compile_Flags / PIC_Flags / Shared_Flags / Static_Archiver_Flags
-   --  is a list whose default is picked from Platform at elaboration, so
-   --  the host-correct toolchain switches are baked in.  Override any field
-   --  to retarget at a different toolchain (ObjectAda, Janus, an LLVM-Ada
-   --  variant, MSVC's lib.exe, etc.).
+   --  Default descriptor; host-correct toolchain switches via Platform.
+   --  Override any field to retarget another toolchain.
 
-   --  ------------------------------------------------------------------------
-   --  PTC ObjectAda (formerly Aonix).  UNTESTED -- provided as a starting
-   --  point to show how a non-GNAT toolchain plugs in.  Notes:
-   --    * The closest gnatmake-equivalent driver is "adabuild".  In practice
-   --      adabuild prefers a project file (.prj); using it on a raw .adb may
-   --      need a wrapper or extra flags not captured here.
-   --    * Obj_Flag / Compile_Only_Flag are guesses -- verify against your
-   --      installed ObjectAda's adabuild(1) / ada(1) docs.
-   --    * On POSIX ObjectAda usually delegates final link to gcc, so the
-   --      Shared_Linker / Static_Archiver defaults below mirror Gnatmake.
-   --  ------------------------------------------------------------------------
+   --  PTC ObjectAda (formerly Aonix).  UNTESTED starting point; verify
+   --  Obj_Flag / Compile_Only_Flag / driver name against your install.
    ObjectAda_Compiler : constant Ada_Compiler :=
      (Executable            => new String'("adabuild"),
-      Compile_Flags         => new Argument_List'(1 .. 0 => null),
+      Compile_Flags         => new Argument_List'(No_Args),
       PIC_Flags             =>
         (case Platform is
            when Linux | MacOS =>
              new Argument_List'(1 => new String'("-fpic")),
            when Windows =>
-             new Argument_List'(1 .. 0 => null)),
+             new Argument_List'(No_Args)),
       Obj_Flag              => new String'("-D"),
       Out_Flag              => new String'("-o"),
       Compile_Only_Flag     => new String'("-c"),
@@ -246,28 +193,15 @@ package No_Build is
              new Argument_List'(1 => new String'("-shared"))),
       Shared_Out_Flag       => new String'("-o"),
       Shared_Runtime_Probe  => Find_Gnat_Runtime'Access,
-      --  ObjectAda usually delegates final link to gcc and picks up the
-      --  GNAT runtime layout; if you're using ObjectAda with its own
-      --  runtime, point this at your own probe instead.
       Static_Archiver       => new String'("ar"),
       Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
 
-   --  ------------------------------------------------------------------------
-   --  RR Software Janus/Ada.  UNTESTED -- provided as a starting point.
-   --  Notes:
-   --    * Janus historically uses DOS-style "/SWITCH" flags and a separate
-   --      compile + link pipeline (jacomp -> jalink, or similar).  The single
-   --      Executable here will likely need to be a small wrapper that drives
-   --      both steps.
-   --    * Janus is Windows-only in practice, so PIC_Flags is empty.
-   --    * Static_Archiver / Shared_Linker default to MinGW gcc/ar, which is
-   --      what's available on most Janus development hosts; swap for MSVC's
-   --      lib.exe / link.exe if you're on a pure-Microsoft toolchain.
-   --  ------------------------------------------------------------------------
+   --  RR Software Janus/Ada.  UNTESTED.  Janus uses a separate compile/link
+   --  pipeline; Executable likely needs to be a wrapper driving both steps.
    Janus_Compiler : constant Ada_Compiler :=
      (Executable            => new String'("janus"),
-      Compile_Flags         => new Argument_List'(1 .. 0 => null),
-      PIC_Flags             => new Argument_List'(1 .. 0 => null),
+      Compile_Flags         => new Argument_List'(No_Args),
+      PIC_Flags             => new Argument_List'(No_Args),
       Obj_Flag              => new String'("/OBJDIR="),
       Out_Flag              => new String'("/OUT="),
       Compile_Only_Flag     => new String'("/COMPILE"),
@@ -275,67 +209,55 @@ package No_Build is
       Shared_Flags          => new Argument_List'(1 => new String'("-shared")),
       Shared_Out_Flag       => new String'("-o"),
       Shared_Runtime_Probe  => null,
-      --  Janus has no GNAT runtime; leave null and let the user supply
-      --  Janus-runtime link flags via Build_Shared_Lib's Extra parameter.
       Static_Archiver       => new String'("ar"),
       Static_Archiver_Flags => new Argument_List'(1 => new String'("rcs")));
 
    procedure Set_Compiler (C : Ada_Compiler);
-   --  Replace the active compiler descriptor.  Subsequent calls to
-   --  Compile_Program, Compile, Build_Static_Lib, Build_Shared_Lib, and
-   --  Go_Rebuild_Urself use C until another Set_Compiler call replaces it.
+   --  Replace the active compiler descriptor.
 
    procedure Compile_Program
      (Source  : String;
       Output  : String        := "";
       Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null));
-   --  Compile and link Source using the active compiler.  When Output is
-   --  empty the compiler chooses the binary name; when Obj_Dir is empty
-   --  objects land in the current directory.
+      Extra   : Argument_List := No_Args);
+   --  Compile and link Source using the active compiler.  Empty Output lets
+   --  the compiler pick the binary name; empty Obj_Dir puts objects in CWD.
 
    procedure Compile
      (Source  : String;
       Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null));
-   --  Compile Source and its dependencies without linking (uses the active
-   --  compiler's Compile_Only_Flag).  Produces .o (and .ali) files only.
+      Extra   : Argument_List := No_Args);
+   --  Compile-only: passes Compile_Only_Flag (.o/.ali, no link).
 
    procedure Build_Static_Lib
      (Src_Dir : String;
       Output  : String;
       Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null));
-   --  Compile every .adb in Src_Dir (compile-only), then archive the objects
-   --  into a static library at Output (e.g. "lib/libfoo.a") using the
-   --  active compiler's Static_Archiver (defaults to "ar rcs").
+      Extra   : Argument_List := No_Args);
+   --  Compile every .adb in Src_Dir, then archive into Output via the active
+   --  Static_Archiver (default "ar rcs").
 
    procedure Build_Shared_Lib
      (Src_Dir : String;
       Output  : String;
       Obj_Dir : String        := "";
-      Extra   : Argument_List := (1 .. 0 => null));
-   --  Compile every .adb in Src_Dir with -fPIC (compile-only), then link the
-   --  objects into a shared library at Output using the active compiler's
-   --  Shared_Linker (defaults to "gcc") with -shared (Linux / Windows) or
-   --  -dynamiclib (macOS) selected from the host platform.
+      Extra   : Argument_List := No_Args);
+   --  Compile every .adb in Src_Dir with PIC_Flags, then link into Output
+   --  via the active Shared_Linker.
 
    --------------------------------------------------------------------------
    --  Path utilities
    --------------------------------------------------------------------------
 
    function "/" (Left, Right : String) return String;
-   --  Join two path components: "a" / "b" => "a/b".
+   --  Join two path components ("a" / "b" => "a/b" or "a\b" on Windows).
 
-   function No_Ext (Path : String) return String;
-   --  Strip the file extension (last "." and everything after it).
-   --  Returns Path unchanged if there is no extension.
+   function No_Ext    (Path : String) return String;
+   --  Strip the trailing ".ext"; returns Path unchanged if no extension.
 
    function Ends_With (Str, Suffix : String) return Boolean;
-   --  Return True when Str ends with Suffix.
-
    function Base_Name (Path : String) return String;
-   --  Return the final component of Path (after the last '/').
+   --  Final path component (after the last '/' or '\').
 
    --------------------------------------------------------------------------
    --  Filesystem predicates
@@ -348,38 +270,21 @@ package No_Build is
    --  Filesystem mutations
    --------------------------------------------------------------------------
 
-   procedure Make_Dir  (Path : String);
-   --  Create directory Path.  Warns (does not raise) if it already exists.
-
-   procedure Make_Dirs (Path : String);
-   --  Create Path and all missing intermediate directories.
+   procedure Make_Dir  (Path : String);  --  warns if Path already exists
+   procedure Make_Dirs (Path : String);  --  also creates parents
 
    procedure Rename_Path (Old_Path, New_Path : String);
-   --  Rename/move a file or directory.
+   procedure Remove_Path (Path : String);   --  recursive for directories
 
-   procedure Remove_Path (Path : String);
-   --  Recursively remove Path (file or directory tree).
-
-   procedure Copy_File (Src, Dst : String);
-   --  Copy the file at Src to Dst, overwriting Dst if it already exists.
-
-   procedure Copy_Dir (Src, Dst : String);
-   --  Recursively copy directory Src into Dst, creating Dst if needed.
+   procedure Copy_File (Src, Dst : String);  --  overwrites Dst
+   procedure Copy_Dir  (Src, Dst : String);  --  recursive
 
    function  Read_File  (Path : String) return String;
-   --  Read the entire contents of Path and return them as a String.
-   --  Raises Build_Error if the file cannot be opened.
-
    procedure Write_File (Path : String; Contents : String);
-   --  Write Contents to Path, creating or overwriting the file.
-   --  Raises Build_Error if the file cannot be written.
+   --  Raise Build_Error on I/O failure.
 
    function  Get_Current_Dir return String;
-   --  Return the current working directory.
-
-   procedure Set_Current_Dir (Path : String);
-   --  Change the current working directory to Path.
-   --  Raises Build_Error if the directory does not exist.
+   procedure Set_Current_Dir (Path : String);  --  raises Build_Error
 
    --------------------------------------------------------------------------
    --  Dependency checking
@@ -402,21 +307,18 @@ package No_Build is
      (Dir     : String;
       Process : not null access procedure (File_Name : String);
       Suffix  : String := "");
-   --  Call Process(simple_name) for every entry in Dir whose name ends with
-   --  Suffix.  Pass Suffix => "" to visit every entry (excluding "." / "..").
+   --  Call Process(simple_name) for each entry in Dir whose name ends with
+   --  Suffix.  Suffix => "" visits every entry (excluding "." / "..").
 
    type Walk_Action is (Walk_Continue, Walk_Skip, Walk_Stop);
-   --  Walk_Continue -- keep going
-   --  Walk_Skip     -- skip this directory's subtree (ignored for files)
-   --  Walk_Stop     -- abort the entire walk immediately
+   --  Walk_Skip skips a directory's subtree; Walk_Stop aborts the walk.
 
    type File_Kind is (Regular_File, Directory, Symlink, Other);
-   --  Note: Symlink is retained for API compatibility but is never returned
-   --  by this implementation.  All special files appear as Other.
+   --  Symlink is reserved; this implementation never returns it.
 
    type Walk_Entry is record
-      Path  : String_Access;  --  full path relative to the walk root
-      Name  : String_Access;  --  simple name (final component)
+      Path  : String_Access;  --  full path relative to root
+      Name  : String_Access;  --  simple name
       Kind  : File_Kind;
       Depth : Natural;        --  0 = entries directly inside root
    end record;
@@ -425,41 +327,33 @@ package No_Build is
      not null access function (E : Walk_Entry) return Walk_Action;
 
    procedure Walk_Dir (Root : String; Func : Walk_Func);
-   --  Recursively walk Root in pre-order, calling Func for each entry.
-   --  Returning Walk_Skip from Func on a Directory prevents descending into it.
-   --  Returning Walk_Stop aborts the entire walk immediately.
+   --  Pre-order recursive walk of Root.
 
    --------------------------------------------------------------------------
    --  Logging
    --------------------------------------------------------------------------
 
    type Log_Handler is access procedure (Tag, Msg : String);
-   --  Signature for a custom log handler.  Tag is the bracketed label
-   --  (e.g. "INFO", "ERRO"); Msg is the message text.
 
    procedure Set_Log_Handler (Handler : Log_Handler);
-   --  Replace the active log handler.  Pass null to restore the default
-   --  handler, which writes "[TAG] msg" to stderr.
+   --  Null restores the default handler ("[TAG] msg" on stderr).
 
    procedure Info  (Msg : String);  --  [INFO] to stderr
    procedure Warn  (Msg : String);  --  [WARN] to stderr
    procedure Erro  (Msg : String);  --  [ERRO] to stderr
-   procedure Panic (Msg : String);  --  [ERRO] to stderr, then raises Build_Error
+   procedure Panic (Msg : String);  --  [ERRO] then raises Build_Error
 
    --------------------------------------------------------------------------
-   --  Go Rebuild Urself(TM)
-   --
-   --  Call this as the very first statement in your build procedure.
-   --  If Source_Path is newer than Binary_Path the build script is
-   --  recompiled with the active compiler (Compile_Program) and then
-   --  re-executed, passing through the original command-line arguments.
+   --  Go_Rebuild_Urself(TM): call as the first statement in your build
+   --  procedure.  If Source_Path is newer than Binary_Path, recompiles and
+   --  re-execs, forwarding the original argv.
    --------------------------------------------------------------------------
 
    procedure Go_Rebuild_Urself
      (Binary_Path : String;
       Source_Path : String;
       Obj_Dir     : String        := "";
-      Extra       : Argument_List := (1 .. 0 => null));
+      Extra       : Argument_List := No_Args);
 
 private
 
