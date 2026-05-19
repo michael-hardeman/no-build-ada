@@ -3,6 +3,7 @@ with Ada.Text_IO;
 with Ada.Calendar;
 with Ada.Containers.Indefinite_Hashed_Maps;
 with Ada.Directories;
+with Ada.Exceptions;
 with Ada.Streams.Stream_IO;
 with Ada.Command_Line;
 with Ada.Environment_Variables;
@@ -1194,7 +1195,14 @@ package body No_Build is
                                             "dynamic_lookup"),
               when Linux | Windows => Args ("-shared")),
          Shared_Out_Flag       => +"-o",
-         Shared_Runtime_Probe  => Find_Gnat_Runtime'Access,
+         --  macOS shared builds use "-undefined dynamic_lookup", so the
+         --  GNAT runtime is resolved at load time -- no need to embed
+         --  libgnat into the .dylib (and gcc -print-libgcc-file-name
+         --  isn't reliably available on the Alire toolchain anyway).
+         Shared_Runtime_Probe  =>
+           (case Platform is
+              when MacOS           => null,
+              when Linux | Windows => Find_Gnat_Runtime'Access),
          Static_Archiver       => +"ar",
          Static_Archiver_Flags => Args ("rcs"),
          Source_Spec_Ext       => +".ads",
@@ -1407,17 +1415,21 @@ package body No_Build is
 
    function Find_Gnat_Runtime return String is
       --  Derive the GNAT adalib/ directory from gcc's reported libgcc.a
-      --  path.  Bare `gcc` must be on PATH; surface a clearer error
-      --  than "program not found" when it isn't.
+      --  path.  Surface a clearer error than "program not found" when
+      --  the probe fails, and preserve the underlying message so the
+      --  caller can see whether gcc was missing, exited non-zero, or
+      --  the tempfile read blew up.
       function Probe_Libgcc return String is
       begin
          return Capture ("gcc", Args ("-print-libgcc-file-name"));
       exception
-         when Build_Error =>
+         when E : Build_Error =>
             raise Build_Error with
-              "Find_Gnat_Runtime needs `gcc` on PATH to locate the GNAT "
-              & "runtime (adalib/libgnat.a).  Either install gcc, or set "
-              & "Active_Compiler.Shared_Runtime_Probe to null / a custom probe.";
+              "Find_Gnat_Runtime: `gcc -print-libgcc-file-name` failed: "
+              & Ada.Exceptions.Exception_Message (E)
+              & ".  Either fix the gcc invocation, or set "
+              & "Active_Compiler.Shared_Runtime_Probe to null (or a "
+              & "custom probe) on this descriptor.";
       end Probe_Libgcc;
 
       Libgcc : constant String := Probe_Libgcc;

@@ -37,8 +37,15 @@ First tagged release.
   `%TEMP%` / `%TMP%` (Windows) when those are set, falling back to the
   previous CWD-local path otherwise. Builds in a read-only working
   directory no longer fail at `Capture`.
-- `Find_Gnat_Runtime` raises a diagnostic `Build_Error` when `gcc`
-  isn't on PATH, instead of bubbling up a generic "program not found".
+- `Find_Gnat_Runtime` raises a diagnostic `Build_Error` that includes
+  the underlying `Capture` failure message instead of swallowing it,
+  so "gcc missing" and "gcc exited non-zero" don't look identical.
+- The default `Gnatmake_Compiler` descriptor sets
+  `Shared_Runtime_Probe` to null on macOS, since the macOS shared
+  link uses `-undefined dynamic_lookup` and resolves the GNAT
+  runtime at load time -- no need to embed libgnat into the .dylib,
+  and the Alire toolchain on macOS doesn't reliably ship a `gcc`
+  symlink suitable for `-print-libgcc-file-name`.
 - `waitpid` loops in `Posix_Spawn` / `Posix_Wait` now tolerate signal
   interruption: a `-1` return retries up to a bounded number of times
   rather than treating EINTR as a hard failure.
