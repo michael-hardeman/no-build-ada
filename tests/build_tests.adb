@@ -6,14 +6,35 @@
 --
 --  Subsequent runs use Go_Rebuild_Urself.
 
+with Ada.Environment_Variables;
+with Ada.Text_IO;
 with No_Build; use No_Build;
 
 procedure Build_Tests is
 
-   Obj   : constant String := "tests/obj";
-   Root  : constant String := "tests";
+   Obj    : constant String := "tests/obj";
+   Root   : constant String := "tests";
+   Report : constant String := Obj / "test_report.txt";
 
-   Pass_Count, Fail_Count : Natural := 0;
+   Pass_Programs, Fail_Programs : Natural := 0;
+   Pass_Asserts,  Fail_Asserts  : Natural := 0;
+
+   procedure Read_Report is
+      use Ada.Text_IO;
+      File   : File_Type;
+      Buffer : String (1 .. 32);
+      Last   : Natural;
+   begin
+      Open (File, In_File, Report);
+      Get_Line (File, Buffer, Last);
+      Pass_Asserts := Pass_Asserts + Natural'Value (Buffer (1 .. Last));
+      Get_Line (File, Buffer, Last);
+      Fail_Asserts := Fail_Asserts + Natural'Value (Buffer (1 .. Last));
+      Close (File);
+   exception
+      when others =>
+         if Is_Open (File) then Close (File); end if;
+   end Read_Report;
 
    procedure Build_And_Run (Test : String) is
       Bin : constant String := Root / No_Ext (Test);
@@ -28,13 +49,25 @@ procedure Build_Tests is
                        Output  => Bin,
                        Obj_Dir => Obj,
                        Extra   => Args ("-I.", "-I" & Root));
+
+      --  Pre-clear so a missing report means "the test crashed before
+      --  reporting" rather than "leftover from a prior run".
+      if Path_Exists (Report) then
+         Remove_Path (Report);
+      end if;
+
       begin
          Cmd (Bin);
-         Pass_Count := Pass_Count + 1;
+         Pass_Programs := Pass_Programs + 1;
       exception
          when Build_Error =>
-            Fail_Count := Fail_Count + 1;
+            Fail_Programs := Fail_Programs + 1;
       end;
+
+      if Path_Exists (Report) then
+         Read_Report;
+         Remove_Path (Report);
+      end if;
    end Build_And_Run;
 
 begin
@@ -43,13 +76,17 @@ begin
                       Obj_Dir     => Obj,
                       Extra       => Args ("-I."));
 
+   Ada.Environment_Variables.Set ("NO_BUILD_TEST_REPORT", Report);
+
    Info ("running test suite...");
    For_Each_File (Root, Build_And_Run'Access, Suffix => ".adb");
 
-   Info ("Tests:" & Pass_Count'Image & " test programs passed,"
-         & Fail_Count'Image & " failed");
+   Info ("Tests:" & Pass_Programs'Image & " test programs passed,"
+         & Fail_Programs'Image & " failed"
+         & " (asserts:" & Pass_Asserts'Image & " passed,"
+         & Fail_Asserts'Image & " failed)");
 
-   if Fail_Count > 0 then
+   if Fail_Programs > 0 then
       Panic ("test failures");
    end if;
 end Build_Tests;

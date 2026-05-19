@@ -22,6 +22,7 @@ package body No_Build is
    use Ada.Text_IO;
    use Ada.Strings.Unbounded;
    use type System.Address;
+   use type Interfaces.C.int;
 
    --  dlopen / dlsym are the only pragma Import in this package; every
    --  other OS call is resolved through them at elaboration time.  Windows
@@ -88,8 +89,6 @@ package body No_Build is
    type Getpid_Func is access function
       return Interfaces.C.int with Convention => C;
 
-   function Is_Ok (X : Interfaces.C.int) return Boolean is (Interfaces.C."=" (X, 0));
-
    function To_Fork    is new Ada.Unchecked_Conversion (System.Address, Fork_Func);
    function To_Execv   is new Ada.Unchecked_Conversion (System.Address, Execv_Func);
    function To_Waitpid is new Ada.Unchecked_Conversion (System.Address, Waitpid_Func);
@@ -111,24 +110,62 @@ package body No_Build is
    C_Rename  : Rename_Func  := null;
    C_Getpid  : Getpid_Func  := null;
 
-   --  POSIX open(2) constants.  O_CREAT/O_TRUNC differ between Linux and macOS.
-   O_WRONLY : constant := 1;
-   O_CREAT  : constant := 64;
-   O_TRUNC  : constant := 512;
+   --------------------------------------------------------------------------
+   --  Named POSIX constants and predicates so the call sites read as prose
+   --  instead of pointing at bare integer literals.
+   --------------------------------------------------------------------------
 
-   function Open_Flags return Interfaces.C.int is begin
-      if Platform = MacOS then
-         return Interfaces.C.int (O_WRONLY + 16#200# + 16#400#);
-      else
-         return Interfaces.C.int (O_WRONLY + O_CREAT + O_TRUNC);
-      end if;
+   --  dlopen mode bit.
+   POSIX_RTLD_LAZY : constant Integer := 1;
+
+   --  Standard fd numbers (stdin isn't redirected here, so it's omitted).
+   POSIX_STDOUT_FD : constant Interfaces.C.int := 1;
+   POSIX_STDERR_FD : constant Interfaces.C.int := 2;
+
+   --  open(2) creation mode for files we write: rw-r--r--.
+   POSIX_DEFAULT_FILE_MODE : constant Interfaces.C.int := 8#644#;
+
+   --  Exit codes used by the forked child before it manages to execv:
+   --    127 is the POSIX convention for "command not found / exec failed".
+   --    1   is a generic "setup before exec failed" (open/dup2 errors).
+   Child_Exit_Exec_Failed  : constant Interfaces.C.int := 127;
+   Child_Exit_Setup_Failed : constant Interfaces.C.int := 1;
+
+   --  Tolerate this many EINTR-style retries on waitpid before giving up.
+   Waitpid_Max_Retries : constant := 16;
+
+   --  POSIX system-call return-value predicates.
+   function Is_Ok (X : Interfaces.C.int) return Boolean is (X = 0);
+   function Syscall_Failed (Result : Interfaces.C.int) return Boolean is (Result < 0);
+
+   --  fork(2) return-value predicates: <0 error, 0 child, >0 parent.
+   function Fork_Failed (Pid : Interfaces.C.int) return Boolean is (Pid < 0);
+   function In_Child_Process (Pid : Interfaces.C.int) return Boolean is (Pid = 0);
+
+   --  POSIX open(2) flag bits.  Linux/glibc and macOS/Darwin disagree on
+   --  the numeric values of O_CREAT / O_TRUNC; O_WRONLY happens to match.
+   --  Windows never reaches Open_Flags (CreateFileA handles its file
+   --  creation), so the "when Windows" branch is just a syntactic
+   --  placeholder.
+   function Open_Flags return Interfaces.C.int is
+      Linux_O_WRONLY  : constant := 1;
+      Linux_O_CREAT   : constant := 64;
+      Linux_O_TRUNC   : constant := 512;
+      Darwin_O_WRONLY : constant := 1;
+      Darwin_O_CREAT  : constant := 16#200#;
+      Darwin_O_TRUNC  : constant := 16#400#;
+   begin
+      case Platform is
+         when MacOS           => return Interfaces.C.int (Darwin_O_WRONLY + Darwin_O_CREAT + Darwin_O_TRUNC);
+         when Linux | Windows => return Interfaces.C.int (Linux_O_WRONLY  + Linux_O_CREAT  + Linux_O_TRUNC);
+      end case;
    end Open_Flags;
 
    procedure Load_Posix_Symbols is
       Lib : DL_Handle;
    begin
       --  dlopen(NULL, RTLD_LAZY): main image, picking up libc.
-      Lib := Default_DL_Open (System.Null_Address, 1);
+      Lib := Default_DL_Open (System.Null_Address, POSIX_RTLD_LAZY);
 
       C_Fork    := To_Fork    (Sym (Lib, "fork"));
       C_Execv   := To_Execv   (Sym (Lib, "execv"));
@@ -141,8 +178,8 @@ package body No_Build is
       C_Getpid  := To_Getpid  (Sym (Lib, "getpid"));
 
       if C_Fork = null or else C_Execv = null or else C_Waitpid = null
-        or else C_Exit = null or else C_Dup2 = null or else C_Open = null
-        or else C_Close = null or else C_Rename = null
+        or else C_Exit   = null or else C_Dup2   = null or else C_Open = null
+        or else C_Close  = null or else C_Rename = null
         or else C_Getpid = null
       then
          raise Build_Error with "failed to resolve libc symbols via dlsym";
@@ -344,10 +381,24 @@ package body No_Build is
       Put_Line (Standard_Error, "[" & Tag & "] " & Msg);
    end Default_Log_Handler;
 
-   Active_Handler : Log_Handler := Default_Log_Handler'Access;
+   Active_Handler   : Log_Handler := Default_Log_Handler'Access;
+   Active_Log_Level : Log_Level   := Verbose;
+
+   --  Decide whether a given tag passes the current Log_Level filter.
+   --  Library-emitted tags: CMD, MKDIR, MKDIRS, RM, RENAME, CP, CD,
+   --  INFO, WARN, ERRO.  Anything not explicitly listed below is treated
+   --  as a detail-level (Verbose-only) tag.
+   function Should_Show (Tag : String; Level : Log_Level) return Boolean is
+     (case Level is
+        when Verbose => True,
+        when Normal  => Tag = "INFO" or else Tag = "WARN" or else Tag = "ERRO",
+        when Quiet   => Tag = "WARN" or else Tag = "ERRO",
+        when Silent  => False);
 
    procedure Log (Tag, Msg : String) is begin
-      if Active_Handler /= null then
+      if Active_Handler /= null
+        and then Should_Show (Tag, Active_Log_Level)
+      then
          Active_Handler (Tag, Msg);
       end if;
    end Log;
@@ -360,6 +411,10 @@ package body No_Build is
       end if;
    end Set_Log_Handler;
 
+   procedure Set_Log_Level (Level : Log_Level) is begin
+      Active_Log_Level := Level;
+   end Set_Log_Level;
+
    --------------------------------------------------------------------------
    --  Argument_List operations
    --------------------------------------------------------------------------
@@ -370,127 +425,90 @@ package body No_Build is
       return Empty;
    end No_Args;
 
-   procedure Append (List : in out Argument_List; Item : String) is
-   begin
+   procedure Append (List : in out Argument_List; Item : String) is begin
       List.Items.Append (Item);
    end Append;
 
-   procedure Append (List : in out Argument_List; Items : Argument_List) is
-   begin
+   procedure Append (List : in out Argument_List; Items : Argument_List) is begin
       for E of Items.Items loop
          List.Items.Append (E);
       end loop;
    end Append;
 
-   function "&" (Left, Right : Argument_List) return Argument_List is
-   begin
+   function "&" (Left, Right : Argument_List) return Argument_List is begin
       return R : Argument_List := Left do
          R.Items.Append (Right.Items);
       end return;
    end "&";
 
-   function "&" (Left : Argument_List; Right : String) return Argument_List is
-   begin
+   function "&" (Left : Argument_List; Right : String) return Argument_List is begin
       return R : Argument_List := Left do
          R.Items.Append (Right);
       end return;
    end "&";
 
-   function "&" (Left : String; Right : Argument_List) return Argument_List is
-   begin
+   function "&" (Left : String; Right : Argument_List) return Argument_List is begin
       return R : Argument_List do
-         R.Items.Append (Left);
-         R.Items.Append (Right.Items);
+         R.Items.Append (Left); R.Items.Append (Right.Items);
       end return;
    end "&";
 
-   function Length (List : Argument_List) return Natural is
-     (Natural (List.Items.Length));
+   function Length (List : Argument_List) return Natural is (Natural (List.Items.Length));
 
-   function Element (List : Argument_List; Index : Positive) return String is
-     (List.Items.Element (Index));
+   function Element (List : Argument_List; Index : Positive) return String is (List.Items.Element (Index));
 
-   function Args (A : String) return Argument_List is
-   begin
+   function Args (A : String) return Argument_List is begin
       return R : Argument_List do
          R.Items.Append (A);
       end return;
    end Args;
 
-   function Args (A, B : String) return Argument_List is
-   begin
+   function Args (A, B : String) return Argument_List is begin
       return R : Argument_List do
-         R.Items.Append (A);
-         R.Items.Append (B);
+         R.Items.Append (A); R.Items.Append (B);
       end return;
    end Args;
 
-   function Args (A, B, C : String) return Argument_List is
-   begin
+   function Args (A, B, C : String) return Argument_List is begin
       return R : Argument_List do
-         R.Items.Append (A);
-         R.Items.Append (B);
-         R.Items.Append (C);
+         R.Items.Append (A); R.Items.Append (B); R.Items.Append (C);
       end return;
    end Args;
 
-   function Args (A, B, C, D : String) return Argument_List is
-   begin
+   function Args (A, B, C, D : String) return Argument_List is begin
       return R : Argument_List do
-         R.Items.Append (A);
-         R.Items.Append (B);
-         R.Items.Append (C);
+         R.Items.Append (A); R.Items.Append (B); R.Items.Append (C);
          R.Items.Append (D);
       end return;
    end Args;
 
-   function Args (A, B, C, D, E : String) return Argument_List is
-   begin
+   function Args (A, B, C, D, E : String) return Argument_List is begin
       return R : Argument_List do
-         R.Items.Append (A);
-         R.Items.Append (B);
-         R.Items.Append (C);
-         R.Items.Append (D);
-         R.Items.Append (E);
+         R.Items.Append (A); R.Items.Append (B); R.Items.Append (C);
+         R.Items.Append (D); R.Items.Append (E);
       end return;
    end Args;
 
-   function Args (A, B, C, D, E, F : String) return Argument_List is
-   begin
+   function Args (A, B, C, D, E, F : String) return Argument_List is begin
       return R : Argument_List do
-         R.Items.Append (A);
-         R.Items.Append (B);
-         R.Items.Append (C);
-         R.Items.Append (D);
-         R.Items.Append (E);
-         R.Items.Append (F);
+         R.Items.Append (A); R.Items.Append (B); R.Items.Append (C);
+         R.Items.Append (D); R.Items.Append (E); R.Items.Append (F);
       end return;
    end Args;
 
-   function Args (A, B, C, D, E, F, G : String) return Argument_List is
-   begin
+   function Args (A, B, C, D, E, F, G : String) return Argument_List is begin
       return R : Argument_List do
-         R.Items.Append (A);
-         R.Items.Append (B);
-         R.Items.Append (C);
-         R.Items.Append (D);
-         R.Items.Append (E);
-         R.Items.Append (F);
+         R.Items.Append (A); R.Items.Append (B); R.Items.Append (C);
+         R.Items.Append (D); R.Items.Append (E); R.Items.Append (F);
          R.Items.Append (G);
       end return;
    end Args;
 
-   function Args (A, B, C, D, E, F, G, H : String) return Argument_List is
-   begin
+   function Args (A, B, C, D, E, F, G, H : String) return Argument_List is begin
       return R : Argument_List do
-         R.Items.Append (A);
-         R.Items.Append (B);
-         R.Items.Append (C);
-         R.Items.Append (D);
-         R.Items.Append (E);
-         R.Items.Append (F);
-         R.Items.Append (G);
-         R.Items.Append (H);
+         R.Items.Append (A); R.Items.Append (B); R.Items.Append (C);
+         R.Items.Append (D); R.Items.Append (E); R.Items.Append (F);
+         R.Items.Append (G); R.Items.Append (H);
       end return;
    end Args;
 
@@ -511,10 +529,8 @@ package body No_Build is
 
    procedure Sh (Command : String) is begin
       case Platform is
-         when Linux | MacOS =>
-            Cmd ("/bin/sh", Args ("-c", Command));
-         when Windows =>
-            Cmd ("cmd.exe", Args ("/c", Command));
+         when Linux | MacOS => Cmd ("/bin/sh", Args ("-c", Command));
+         when Windows       => Cmd ("cmd.exe", Args ("/c", Command));
       end case;
    end Sh;
 
@@ -533,12 +549,8 @@ package body No_Build is
    --  invokes gnatmake N times pays the PATH walk once.  Only PATH lookups
    --  are cached -- slash-bearing paths depend on CWD and are re-checked.
 
-   function Resolve_Program
-     (Program : String;
-      Display : String) return String
-   is
-      Has_Slash : constant Boolean :=
-        (for some C of Program => C = '/' or else C = '\');
+   function Resolve_Program (Program : String; Display : String) return String is
+      Has_Slash : constant Boolean := (for some C of Program => C = '/' or else C = '\');
 
       --  Return a usable path: Path itself if it points to a regular file,
       --  Path & ".exe" on Windows if that exists, else "".
@@ -560,8 +572,7 @@ package body No_Build is
          return "";
       end Probe_With_Exe;
 
-      Separator : constant Character :=
-        (if Platform = Windows then ';' else ':');
+      Separator : constant Character := (if Platform = Windows then ';' else ':');
    begin
       Log ("CMD", Display);
 
@@ -590,8 +601,7 @@ package body No_Build is
 
       if Ada.Environment_Variables.Exists ("PATH") then
          declare
-            PATH  : constant String :=
-              Ada.Environment_Variables.Value ("PATH");
+            PATH  : constant String := Ada.Environment_Variables.Value ("PATH");
             Start : Positive := PATH'First;
 
             function Try (Dir : String) return String is
@@ -630,9 +640,7 @@ package body No_Build is
    end Resolve_Program;
 
    --  Build a display string "program arg1 arg2 ..." for logging.
-   function Display_Of
-     (Program : String; Args : Argument_List) return String
-   is
+   function Display_Of (Program : String; Args : Argument_List) return String is
       D : Unbounded_String := To_Unbounded_String (Program);
    begin
       for A of Args.Items loop
@@ -647,12 +655,10 @@ package body No_Build is
 
    --  C argv: NULL-terminated array of NUL-terminated strings, suitable for
    --  passing to execv.
-   type C_Str_Array is array (Natural range <>) of
-     Interfaces.C.Strings.chars_ptr;
+   type C_Str_Array is array (Natural range <>) of Interfaces.C.Strings.chars_ptr;
    type C_Str_Array_Access is access C_Str_Array;
 
-   procedure Free_C_Str_Array_Storage is new Ada.Unchecked_Deallocation
-     (C_Str_Array, C_Str_Array_Access);
+   procedure Free_C_Str_Array_Storage is new Ada.Unchecked_Deallocation (C_Str_Array, C_Str_Array_Access);
 
    --  Controlled holder for a C argv: frees both the chars_ptrs and the
    --  underlying array on scope exit so an exception between spawn-prep
@@ -674,10 +680,9 @@ package body No_Build is
       end if;
    end Finalize;
 
-   procedure Build_Argv
-     (Holder    : in out C_Argv_Holder;
-      Prog_Path : String;
-      Args      : Argument_List)
+   procedure Build_Argv (Holder    : in out C_Argv_Holder;
+                         Prog_Path : String;
+                         Args      : Argument_List)
    is
       use Interfaces.C.Strings;
       N : constant Natural := Length (Args);
@@ -704,32 +709,42 @@ package body No_Build is
       C_Path : chars_ptr := New_String (File_Path);
       FD     : int;
    begin
-      FD := C_Open (To_Address (C_Path), Open_Flags, 8#644#);
+      FD := C_Open (To_Address (C_Path), Open_Flags, POSIX_DEFAULT_FILE_MODE);
       Free (C_Path);
-      if FD < 0 then
-         C_Exit (1);
+      if Syscall_Failed (FD) then
+         C_Exit (Child_Exit_Setup_Failed);
       end if;
-      if C_Dup2 (FD, Target_FD) < 0 then
-         C_Exit (1);
+      if Syscall_Failed (C_Dup2 (FD, Target_FD)) then
+         C_Exit (Child_Exit_Setup_Failed);
       end if;
       if FD /= Target_FD then
          Ignore (C_Close (FD));
       end if;
    end Redirect_FD;
 
-   --  WIFEXITED + WEXITSTATUS on a raw waitpid status word; -1 on signal.
+   --  Decode a raw waitpid status word into either the child's exit code
+   --  or a sentinel for "killed by signal".  POSIX layout (<sys/wait.h>):
+   --
+   --     bits 0..6  -- signal number (0 means the child called _exit)
+   --     bit  7     -- core-dump flag (not exposed here)
+   --     bits 8..15 -- exit code (valid only when bits 0..6 are zero)
    function Exit_Status_Of (Status : Interfaces.C.int) return Integer is
-      S : constant Integer := Integer (Status);
+      Killed_By_Signal_Sentinel : constant Integer := -1;
+      Signal_Bits_Modulus       : constant Integer := 128;  -- 2**7
+      Exit_Code_Shift           : constant Integer := 256;  -- 2**8
+      Exit_Code_Modulus         : constant Integer := 256;  -- next 8 bits
+
+      S                : constant Integer := Integer (Status);
+      Signal_Number    : constant Integer := S mod Signal_Bits_Modulus;
+      Killed_By_Signal : constant Boolean := Signal_Number /= 0;
    begin
-      if (S mod 128) = 0 then
-         return (S / 256) mod 256;
-      else
-         return -1;
+      if Killed_By_Signal then
+         return Killed_By_Signal_Sentinel;
       end if;
+      return (S / Exit_Code_Shift) mod Exit_Code_Modulus;
    end Exit_Status_Of;
 
-   procedure Check_Exit (Code : Integer) is
-   begin
+   procedure Check_Exit (Code : Integer) is begin
       if Code /= 0 then
          Log ("ERRO", "command exited with status" & Code'Image);
          raise Build_Error with "command failed (exit" & Code'Image & ")";
@@ -749,28 +764,29 @@ package body No_Build is
       Pid     : int;
       Status  : aliased int;
       Waited  : int;
+      Retries : Natural := 0;
       C_Path  : Interfaces.C.Strings.chars_ptr;
    begin
       Build_Argv (Holder, Prog_Path, Args);
       Pid := C_Fork.all;
 
-      if Pid < 0 then
+      if Fork_Failed (Pid) then
          raise Build_Error with "fork failed";
       end if;
 
-      if Pid = 0 then
+      if In_Child_Process (Pid) then
          --  Child process: set up redirections and exec.
          if Stdout_File /= "" then
-            Redirect_FD (Stdout_File, 1);
+            Redirect_FD (Stdout_File, POSIX_STDOUT_FD);
          end if;
          if Stderr_File /= "" then
-            Redirect_FD (Stderr_File, 2);
+            Redirect_FD (Stderr_File, POSIX_STDERR_FD);
          end if;
 
          C_Path := Interfaces.C.Strings.New_String (Prog_Path);
          Ignore (C_Execv (To_Address (C_Path), Holder.Argv (0)'Address));
          --  If execv returns, it failed.
-         C_Exit (127);
+         C_Exit (Child_Exit_Exec_Failed);
       end if;
 
       --  Parent process.  Holder finalizes here on scope exit.
@@ -780,9 +796,16 @@ package body No_Build is
                   (System.Storage_Elements.Integer_Address (Pid));
       end if;
 
+      --  Reap the child.  A negative return from waitpid is almost always
+      --  EINTR (we pass options=0, so WNOHANG can't yield 0).  Retry a
+      --  bounded number of times so a stray signal doesn't fail the build.
       loop
          Waited := C_Waitpid (Pid, Status'Access, 0);
-         exit when Waited = Pid or else Waited < 0;
+         exit when Waited = Pid;
+         if Syscall_Failed (Waited) then
+            Retries := Retries + 1;
+            exit when Retries > Waitpid_Max_Retries;
+         end if;
       end loop;
 
       Check_Exit (Exit_Status_Of (Status));
@@ -791,13 +814,18 @@ package body No_Build is
 
    function Posix_Wait (Pid_Addr : System.Address) return Integer is
       use Interfaces.C;
-      Pid    : constant int := int (System.Storage_Elements.To_Integer (Pid_Addr));
-      Status : aliased int;
-      Waited : int;
+      Pid     : constant int := int (System.Storage_Elements.To_Integer (Pid_Addr));
+      Status  : aliased int;
+      Waited  : int;
+      Retries : Natural := 0;
    begin
       loop
          Waited := C_Waitpid (Pid, Status'Access, 0);
-         exit when Waited = Pid or else Waited < 0;
+         exit when Waited = Pid;
+         if Syscall_Failed (Waited) then
+            Retries := Retries + 1;
+            exit when Retries > Waitpid_Max_Retries;
+         end if;
       end loop;
       return Exit_Status_Of (Status);
    end Posix_Wait;
@@ -858,9 +886,7 @@ package body No_Build is
       Append (B, '"');
    end Win32_Append_Arg;
 
-   function Build_Command_Line
-     (Prog_Path : String; Args : Argument_List) return String
-   is
+   function Build_Command_Line (Prog_Path : String; Args : Argument_List) return String is
       B : Unbounded_String;
    begin
       Win32_Append_Arg (B, Prog_Path);
@@ -1000,12 +1026,8 @@ package body No_Build is
       Stderr_Path : constant String := To_String (Redir.Stderr);
    begin
       case Platform is
-         when Linux | MacOS =>
-            return Posix_Spawn
-              (Prog_Path, Args, Stdout_Path, Stderr_Path, Wait_For_Exit);
-         when Windows =>
-            return Win32_Spawn
-              (Prog_Path, Args, Stdout_Path, Stderr_Path, Wait_For_Exit);
+         when Linux | MacOS => return Posix_Spawn (Prog_Path, Args, Stdout_Path, Stderr_Path, Wait_For_Exit);
+         when Windows       => return Win32_Spawn (Prog_Path, Args, Stdout_Path, Stderr_Path, Wait_For_Exit);
       end case;
    end Spawn;
 
@@ -1040,8 +1062,28 @@ package body No_Build is
          return S (First .. Last);
       end Trim_Both;
 
-      PID_Str : constant String :=
-        Ada.Strings.Fixed.Trim (Integer'Image (Get_PID), Ada.Strings.Left);
+      --  Prefer the OS temp directory so a build in a read-only CWD still
+      --  works; fall back to "." only when no temp env var is set.
+      function Tmp_Root return String is
+         use Ada.Environment_Variables;
+      begin
+         case Platform is
+            when Linux | MacOS =>
+               if Exists ("TMPDIR") then
+                  return Value ("TMPDIR");
+               end if;
+               return "/tmp";
+            when Windows =>
+               if Exists ("TEMP") then
+                  return Value ("TEMP");
+               elsif Exists ("TMP") then
+                  return Value ("TMP");
+               end if;
+               return ".";
+         end case;
+      end Tmp_Root;
+
+      PID_Str : constant String := Ada.Strings.Fixed.Trim (Integer'Image (Get_PID), Ada.Strings.Left);
    begin
       Capture_Counter := Capture_Counter + 1;
       declare
@@ -1049,7 +1091,7 @@ package body No_Build is
            Ada.Strings.Fixed.Trim
              (Natural'Image (Capture_Counter), Ada.Strings.Left);
          Tmp_Path : constant String :=
-           ".no_build_capture_" & PID_Str & "_" & Counter_Str;
+           Tmp_Root / (".no_build_capture_" & PID_Str & "_" & Counter_Str);
          Redir : constant Redirect := To_File (Stdout => Tmp_Path);
       begin
          Cmd (Program, Args, Redir);
@@ -1068,10 +1110,9 @@ package body No_Build is
       end;
    end Capture;
 
-   function Cmd_Async
-     (Program : String;
-      Args    : Argument_List := No_Args;
-      Redir   : Redirect      := No_Redirect) return Proc
+   function Cmd_Async (Program : String;
+                       Args    : Argument_List := No_Args;
+                       Redir   : Redirect      := No_Redirect) return Proc
    is
       Display   : constant String := Display_Of (Program, Args);
       Prog_Path : constant String := Resolve_Program (Program, Display);
@@ -1079,8 +1120,7 @@ package body No_Build is
       return (Pid => Spawn (Prog_Path, Args, Redir, Wait_For_Exit => False));
    end Cmd_Async;
 
-   function Wait_For (Pid : System.Address) return Integer is
-   begin
+   function Wait_For (Pid : System.Address) return Integer is begin
       case Platform is
          when Linux | MacOS => return Posix_Wait (Pid);
          when Windows       => return Win32_Wait (Pid);
@@ -1091,7 +1131,8 @@ package body No_Build is
       Code : constant Integer := Wait_For (P.Pid);
    begin
       if Code /= 0 then
-         raise Build_Error with "process exited with non-zero status";
+         raise Build_Error
+           with "process exited with status" & Code'Image;
       end if;
    end Wait;
 
@@ -1130,8 +1171,7 @@ package body No_Build is
    --  Compiler descriptors
    --------------------------------------------------------------------------
 
-   function Gnatmake_Compiler return Ada_Compiler is
-   begin
+   function Gnatmake_Compiler return Ada_Compiler is begin
       return
         (Executable        => +"gnatmake",
          Compile_Flags     => No_Args,
@@ -1154,8 +1194,7 @@ package body No_Build is
          Static_Archiver_Flags => Args ("rcs"));
    end Gnatmake_Compiler;
 
-   function ObjectAda_Compiler return Ada_Compiler is
-   begin
+   function ObjectAda_Compiler return Ada_Compiler is begin
       return
         (Executable        => +"adabuild",
          Compile_Flags     => No_Args,
@@ -1178,8 +1217,7 @@ package body No_Build is
          Static_Archiver_Flags => Args ("rcs"));
    end ObjectAda_Compiler;
 
-   function Janus_Compiler return Ada_Compiler is
-   begin
+   function Janus_Compiler return Ada_Compiler is begin
       return
         (Executable           => +"janus",
          Compile_Flags        => No_Args,
@@ -1248,6 +1286,11 @@ package body No_Build is
       Dir_Ent : Directory_Entry_Type;
       Acc     : Argument_List;
    begin
+      --  Thread the active compiler's always-on flags through too --
+      --  Compile_Program does this for executables, so library builds
+      --  must match or Set_Compiler (..., Compile_Flags => ...) would
+      --  silently apply to one but not the other.
+      Flags.Append (Active_Compiler.Compile_Flags);
       if PIC then
          Flags.Append (Active_Compiler.PIC_Flags);
       end if;
@@ -1314,7 +1357,21 @@ package body No_Build is
    end Build_Shared_Lib;
 
    function Find_Gnat_Runtime return String is
-      Libgcc : constant String := Capture ("gcc", Args ("-print-libgcc-file-name"));
+      --  Derive the GNAT adalib/ directory from gcc's reported libgcc.a
+      --  path.  Bare `gcc` must be on PATH; surface a clearer error
+      --  than "program not found" when it isn't.
+      function Probe_Libgcc return String is
+      begin
+         return Capture ("gcc", Args ("-print-libgcc-file-name"));
+      exception
+         when Build_Error =>
+            raise Build_Error with
+              "Find_Gnat_Runtime needs `gcc` on PATH to locate the GNAT "
+              & "runtime (adalib/libgnat.a).  Either install gcc, or set "
+              & "Active_Compiler.Shared_Runtime_Probe to null / a custom probe.";
+      end Probe_Libgcc;
+
+      Libgcc : constant String := Probe_Libgcc;
       Slash  : Natural := 0;
    begin
       for I in reverse Libgcc'Range loop

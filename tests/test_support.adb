@@ -1,5 +1,7 @@
 with Ada.Text_IO;
 with Ada.Command_Line;
+with Ada.Environment_Variables;
+with Ada.Strings.Fixed;
 with No_Build;
 
 package body Test_Support is
@@ -71,10 +73,34 @@ package body Test_Support is
    end Assert_Equal;
 
    procedure End_Tests is
+      Report_Var : constant String := "NO_BUILD_TEST_REPORT";
    begin
       Put_Line ("    " & Suite_Name (1 .. Suite_Len) & ":"
                 & Pass_Count'Image & " passed,"
                 & Fail_Count'Image & " failed");
+
+      --  When invoked by the build_tests runner, write a two-line tally
+      --  to the path provided in NO_BUILD_TEST_REPORT so the runner can
+      --  aggregate assertion-level counts across all test programs.
+      if Ada.Environment_Variables.Exists (Report_Var) then
+         declare
+            Path : constant String :=
+              Ada.Environment_Variables.Value (Report_Var);
+            File : File_Type;
+            function Trim (N : Natural) return String is
+              (Ada.Strings.Fixed.Trim
+                 (Natural'Image (N), Ada.Strings.Left));
+         begin
+            Create (File, Out_File, Path);
+            Put_Line (File, Trim (Pass_Count));
+            Put_Line (File, Trim (Fail_Count));
+            Close (File);
+         exception
+            when others =>
+               if Is_Open (File) then Close (File); end if;
+         end;
+      end if;
+
       if Fail_Count > 0 then
          Ada.Command_Line.Set_Exit_Status (Ada.Command_Line.Failure);
       end if;

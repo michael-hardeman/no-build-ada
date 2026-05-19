@@ -13,6 +13,10 @@ package No_Build is
 
    pragma Elaborate_Body;
 
+   Version : constant String := "0.1.0";
+   --  Library version (semver-ish).  Bump together with CHANGELOG.md on
+   --  every change to the public spec or to observable behavior.
+
    Build_Error : exception;
    --  Raised when any build step fails (non-zero exit code or OS error).
 
@@ -224,8 +228,14 @@ package No_Build is
       Output  : String;
       Obj_Dir : String        := "";
       Extra   : Argument_List := No_Args);
-   --  Compile every .adb in Src_Dir, then archive into Output via the active
-   --  Static_Archiver (default "ar rcs").
+   --  Compile every .adb in Src_Dir, then archive the resulting .o files
+   --  into Output via the active Static_Archiver (default "ar rcs").
+   --
+   --  The archive contains object files only -- no Ada binder file
+   --  (b~*.adb).  Consumers that re-link via gnatmake are fine, because
+   --  gnatmake regenerates the binder from the .ali files left in Obj_Dir.
+   --  Direct linking by a non-Ada toolchain will be missing elaboration
+   --  code; that case is not supported here.
 
    procedure Build_Shared_Lib
      (Src_Dir : String;
@@ -324,10 +334,22 @@ package No_Build is
    --  Logging
    --------------------------------------------------------------------------
 
+   type Log_Level is (Verbose, Normal, Quiet, Silent);
+   --  Filter applied before the active Log_Handler runs:
+   --    Verbose -- default; every tag including [CMD], [MKDIR], [CP], ...
+   --    Normal  -- [INFO], [WARN], [ERRO] only
+   --    Quiet   -- [WARN], [ERRO] only
+   --    Silent  -- nothing.
+
+   procedure Set_Log_Level (Level : Log_Level);
+   --  Default is Verbose.  Use Normal (or lower) to silence the per-command
+   --  [CMD] echo without writing a custom Log_Handler.
+
    type Log_Handler is access procedure (Tag, Msg : String);
 
    procedure Set_Log_Handler (Handler : Log_Handler);
-   --  Null restores the default handler ("[TAG] msg" on stderr).
+   --  Null restores the default handler ("[TAG] msg" on stderr).  The
+   --  handler is invoked only after the active Log_Level passes the tag.
 
    procedure Info  (Msg : String);  --  [INFO] to stderr
    procedure Warn  (Msg : String);  --  [WARN] to stderr

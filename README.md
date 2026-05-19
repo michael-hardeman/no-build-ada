@@ -88,14 +88,13 @@ end;
 
 ## Windows support
 
-In order to try and avoid linking errors or separate package we don't
-directly link with OS libraries. `no_build.adb` imports the smallest
-surface area we can that allows us to dynamically load OS libraries
-at runtime: `dlopen` and `dlsym`. On Linux (glibc ≥ 2.34) and macOS these 
-resolve against libc / libSystem automatically. If you are on Windows you 
-will not have a standard C library that provides them. You must add a 
-small shim to your project that exports these symbols on top 
-of `LoadLibraryA` / `GetProcAddress`.
+To stay compiler-independent and avoid pulling in an OS-library
+binding, `no_build.adb` imports only `dlopen` and `dlsym` from libc;
+every other syscall is resolved through them at elaboration time. On
+Linux (glibc ≥ 2.34) and macOS these resolve against libc / libSystem
+automatically. Windows has no standard C library that exports them,
+so you must add a small shim that wraps `LoadLibraryA` /
+`GetProcAddress`.
 
 Copy `windows/windows_dl.ads` and `windows/windows_dl.adb` next to your `build.adb`:
 
@@ -122,9 +121,9 @@ toolchain.
 GNAT/MinGW on Windows ships a `libdl.a` wrapper around `LoadLibraryA` /
 `GetProcAddress`, so you have a choice:
 
-1. **Use the shim above.** (Reccomended) - Compiler-agnostic — 
-   same workflow in all compilers
-   same `build.adb` keeps working if you ever switch to another toolchain.
+1. **Use the shim above.** (Recommended) — compiler-agnostic; the same
+   workflow works on every Ada compiler, and the same `build.adb` keeps
+   working if you ever switch toolchains.
 2. **Skip the shim and link MinGW's libdl wrapper.**  Pass `-largs -ldl`
    on the one-time bootstrap:
 
@@ -280,12 +279,21 @@ per-platform workflows under `.github/workflows/`.
 
 ## Requirements
 
-- Any Ada 2012+ compiler (tested with GNAT 15).  The package has no
+- An Ada 2012+ compiler. CI runs the FSF GNAT shipped by
+  `ubuntu-latest` (currently GNAT 13/14) on Linux, Alire's
+  `gnat_native` on macOS, and MSYS2 `mingw-w64-x86_64-gcc-ada` on
+  Windows; day-to-day development is on GNAT 15. The package has no
   `with GNAT.OS_Lib`, so other toolchains (ObjectAda, Janus, …) should
-  build it given an `Ada_Compiler` descriptor.
+  build it given a matching `Ada_Compiler` descriptor.
 - `ar` for static libraries
-- `gcc` for shared libraries
+- `gcc` for shared libraries (used by `Find_Gnat_Runtime` to locate
+  the GNAT adalib path)
 - On Windows: the `windows_dl.adb` shim described above
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).  The library version is also exposed
+as `No_Build.Version` in `no_build.ads`.
 
 ## Inspiration
 
