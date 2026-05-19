@@ -18,19 +18,29 @@ First tagged release.
 - `Log_Level` enum (`Verbose | Normal | Quiet | Silent`) and
   `Set_Log_Level` procedure so callers can mute per-command
   `[CMD]` / `[MKDIR]` / ... noise without writing a custom
-  `Log_Handler`. Default level remains `Verbose`.
+  `Log_Handler`.  Default level remains `Verbose`.
+- `Ada_Compiler` gained `Source_Spec_Ext`, `Source_Body_Ext`,
+  `Object_Ext`, and a `Resolve_Source` access function so toolchain
+  conventions (file extensions, source-path quirks) live on the
+  descriptor instead of being hardcoded.  The default
+  `Gnatmake_Compiler` wires `Resolve_Source` to a body-local helper
+  that swaps a `.ads` for a sibling `.adb` -- working around
+  `gnatmake -c`'s refusal to compile a bare spec next to a body.
 
 ### Changed
 
 - `Build_Static_Lib` and `Build_Shared_Lib` now take a single `Source`
   (path to a root `.ads` or `.adb`) instead of a `Src_Dir`, mirroring
-  `Compile_Program`. gnatmake compiles Source plus its `with`-closure
-  into the (now required) `Obj_Dir`, and the library is archived (or
-  linked) from every `.o` left there. Spec-only packages (`.ads`
-  without a body) are no longer silently skipped; hierarchical
-  packages are included only when reachable from the root unit's
-  `with`-closure. `Obj_Dir` must be dedicated to the library --
-  shared dirs would pull unrelated objects into the archive.
+  `Compile_Program`.  The compiler compiles Source plus its
+  `with`-closure; spec-only packages are no longer silently skipped,
+  and hierarchical packages are included only when reachable from the
+  root unit's `with`-closure.
+- `Obj_Dir` is now the *parent* directory; each Build_*_Lib call
+  carves its own subdir (`<stem>_static` or `<stem>_pic`, derived
+  from `Output`'s basename) so executable and library builds can
+  share an `Obj_Dir` without cross-contamination.  The library
+  archives or links every object file (extension from
+  `Active_Compiler.Object_Ext`) found in that subdir.
 - `Wait` (on a `Proc` returned by `Cmd_Async`) now embeds the exit
   status in the `Build_Error` message, matching `Cmd` / `Check_Exit`.
 - `Capture` writes its temporary stdout file under `$TMPDIR` (POSIX) /
@@ -60,10 +70,11 @@ First tagged release.
 
 ### Documentation
 
-- `Build_Static_Lib` doc now states that the `.a` contains object
-  files only (no Ada binder) and is intended for re-link by a
-  downstream `gnatmake`, not direct consumption by a non-Ada linker.
+- `Build_Static_Lib` doc now states that the archive contains object
+  files only (no Ada binder artifact) and is intended for re-link by
+  a downstream Ada toolchain, not direct consumption by a non-Ada
+  linker.
 - `tests/build_tests` reports assertion-level pass/fail totals in
   addition to the program-level tally.
 - README typos fixed and the Windows-support paragraph rewritten;
-  GNAT minimum stated explicitly.
+  GNAT minimum and per-platform CI toolchains stated explicitly.

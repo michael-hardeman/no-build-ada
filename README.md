@@ -195,8 +195,9 @@ one level down at `examples/build_all.adb`.  That changes three things:
   `no_build.adb` is at the root, we have to point gnatmake back up with
   `-I.`.  The same flag is passed to `Go_Rebuild_Urself` (via `Extra`) so
   the self-rebuild keeps working.
-- **`-D examples/obj`** — keeps `.o` / `.ali` files out of the repo root.
-  A normal project usually wants the same thing, but the *default*
+- **`-D examples/obj`** — keeps intermediate compiler artifacts
+  (objects, library-information files) out of the repo root.  A normal
+  project usually wants the same thing, but the *default*
   `gnatmake build.adb` drops them next to the source, which is fine when
   the source already lives at the root.
 - **`./examples/build_all`** instead of `./build` — the output binary
@@ -282,16 +283,17 @@ per-platform workflows under `.github/workflows/`.
 
 ## Requirements
 
-- An Ada 2012+ compiler. CI runs the FSF GNAT shipped by
+- An Ada 2012+ compiler.  CI runs the FSF GNAT shipped by
   `ubuntu-latest` (currently GNAT 13/14) on Linux, Alire's
   `gnat_native` on macOS, and MSYS2 `mingw-w64-x86_64-gcc-ada` on
-  Windows; day-to-day development is on GNAT 15. The package has no
+  Windows; day-to-day development is on GNAT 15.  The package has no
   `with GNAT.OS_Lib`, so other toolchains (ObjectAda, Janus, …) should
   build it given a matching `Ada_Compiler` descriptor.
-- `ar` for static libraries
-- `gcc` for shared libraries (used by `Find_Gnat_Runtime` to locate
-  the GNAT adalib path)
-- On Windows: the `windows_dl.adb` shim described above
+- `ar` if you call `Build_Static_Lib` (default `Static_Archiver`).
+- `gcc` if you call `Build_Shared_Lib` (default `Shared_Linker`).  On
+  Linux/Windows it is also invoked by the default `Find_Gnat_Runtime`
+  probe to locate the GNAT adalib path.
+- On Windows: the `windows_dl.adb` shim described above.
 
 ## Changelog
 

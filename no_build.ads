@@ -239,7 +239,7 @@ package No_Build is
      (Source  : String;
       Obj_Dir : String        := "";
       Extra   : Argument_List := No_Args);
-   --  Compile-only: passes Compile_Only_Flag (.o/.ali, no link).
+   --  Compile-only: passes Compile_Only_Flag (no link).
 
    procedure Build_Static_Lib
      (Source  : String;
@@ -272,21 +272,23 @@ package No_Build is
    --  The archive contains object files only -- no Ada binder
    --  artifact.  Consumers that re-link with an Ada toolchain
    --  regenerate the binder from whatever library-information files
-   --  the compiler leaves in Obj_Dir (.ali files for GNAT).  Direct
-   --  linking by a non-Ada toolchain will be missing elaboration
-   --  code; that case is not supported here.
+   --  the compiler leaves in the subdir (.ali files for GNAT).
+   --  Direct linking by a non-Ada toolchain will be missing
+   --  elaboration code; that case is not supported here.
 
    procedure Build_Shared_Lib
      (Source  : String;
       Output  : String;
       Obj_Dir : String;
       Extra   : Argument_List := No_Args);
-   --  Source should point at your libraries root package.
    --  As Build_Static_Lib, but compiles with PIC_Flags and links the
-   --  collected .o files into Output via the active Shared_Linker
-   --  (default "gcc -shared", "gcc -dynamiclib ..." on macOS).
-   --  Appends the result of Shared_Runtime_Probe when non-null so the
-   --  GNAT runtime is statically embedded into the .so / .dylib.
+   --  collected object files into Output via the active Shared_Linker
+   --  (default "gcc -shared", "gcc -dynamiclib -undefined dynamic_lookup"
+   --  on macOS).  When Shared_Runtime_Probe is non-null its result is
+   --  appended so the Ada runtime is embedded into the library; the
+   --  default GNAT descriptor leaves it null on macOS, since the
+   --  -undefined dynamic_lookup link mode defers runtime resolution to
+   --  load time.
 
    --------------------------------------------------------------------------
    --  Path utilities
