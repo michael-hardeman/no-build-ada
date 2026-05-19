@@ -173,6 +173,13 @@ package No_Build is
    --  Default Runtime_Probe_Func for GNAT: derives the adalib/libgnat path
    --  from `gcc -print-libgcc-file-name`.
 
+   type Source_Resolver_Func is access function (Source : String) return String;
+   --  Per-compiler hook called by Build_Static_Lib / Build_Shared_Lib
+   --  before invoking the compile.  Returns the path the compiler
+   --  should actually see; lets a toolchain rewrite Source to work
+   --  around its own quirks (e.g. swap a .ads for a sibling .adb on
+   --  GNAT).  Null means "use Source as given".
+
    subtype US is Ada.Strings.Unbounded.Unbounded_String;
    function "+" (Str : String) return US
      renames Ada.Strings.Unbounded.To_Unbounded_String;
@@ -192,6 +199,17 @@ package No_Build is
       Shared_Runtime_Probe  : Runtime_Probe_Func := null;
       Static_Archiver       : US;             --  static-lib archiver
       Static_Archiver_Flags : Argument_List;
+
+      --  File-extension conventions used by Build_*_Lib (collecting
+      --  produced objects, resolving spec/body siblings).  Defaults
+      --  match the de-facto GNAT convention; override for toolchains
+      --  that emit .obj or use a different source-naming scheme.
+      Source_Spec_Ext       : US := +".ads";
+      Source_Body_Ext       : US := +".adb";
+      Object_Ext            : US := +".o";
+
+      --  Optional source-path rewriter; see Source_Resolver_Func.
+      Resolve_Source        : Source_Resolver_Func := null;
    end record;
 
    function Gnatmake_Compiler  return Ada_Compiler;
@@ -224,26 +242,51 @@ package No_Build is
    --  Compile-only: passes Compile_Only_Flag (.o/.ali, no link).
 
    procedure Build_Static_Lib
-     (Src_Dir : String;
+     (Source  : String;
       Output  : String;
-      Obj_Dir : String        := "";
+      Obj_Dir : String;
       Extra   : Argument_List := No_Args);
-   --  Compile every .adb in Src_Dir, then archive the resulting .o files
-   --  into Output via the active Static_Archiver (default "ar rcs").
+   --  Compile Source (a root unit) and its with-closure into Obj_Dir,
+   --  then archive every object file the compiler leaves there into
+   --  Output via the active Static_Archiver (default "ar rcs").
    --
-   --  The archive contains object files only -- no Ada binder file
-   --  (b~*.adb).  Consumers that re-link via gnatmake are fine, because
-   --  gnatmake regenerates the binder from the .ali files left in Obj_Dir.
-   --  Direct linking by a non-Ada toolchain will be missing elaboration
+   --  Source may be a spec or a body file.  The active compiler's
+   --  Resolve_Source hook (if any) gets first crack at rewriting it
+   --  -- e.g. the default GNAT descriptor swaps a .ads for a sibling
+   --  .adb when one exists, because gnatmake -c won't compile a bare
+   --  spec next to a body.  Spec-only packages pass through unchanged.
+   --
+   --  Build_Static_Lib (resp. Build_Shared_Lib) creates a dedicated
+   --  subdirectory of Obj_Dir named "<stem>_static" (resp.
+   --  "<stem>_pic"), where <stem> is Output's basename without
+   --  extension, and runs the compile into that subdir.  This means
+   --  Obj_Dir itself may be shared with other builds -- the subdir
+   --  is per-library and per-link-kind, so collecting every object
+   --  file (extension from Active_Compiler.Object_Ext) found there
+   --  pulls in exactly the lib's own objects.
+   --
+   --  Children of a hierarchical package are included only when they
+   --  are reachable from Source's with-closure.  Point at a "with
+   --  everything" aggregator unit to bundle a whole hierarchy.
+   --
+   --  The archive contains object files only -- no Ada binder
+   --  artifact.  Consumers that re-link with an Ada toolchain
+   --  regenerate the binder from whatever library-information files
+   --  the compiler leaves in Obj_Dir (.ali files for GNAT).  Direct
+   --  linking by a non-Ada toolchain will be missing elaboration
    --  code; that case is not supported here.
 
    procedure Build_Shared_Lib
-     (Src_Dir : String;
+     (Source  : String;
       Output  : String;
-      Obj_Dir : String        := "";
+      Obj_Dir : String;
       Extra   : Argument_List := No_Args);
-   --  Compile every .adb in Src_Dir with PIC_Flags, then link into Output
-   --  via the active Shared_Linker.
+   --  Source should point at your libraries root package.
+   --  As Build_Static_Lib, but compiles with PIC_Flags and links the
+   --  collected .o files into Output via the active Shared_Linker
+   --  (default "gcc -shared", "gcc -dynamiclib ..." on macOS).
+   --  Appends the result of Shared_Runtime_Probe when non-null so the
+   --  GNAT runtime is statically embedded into the .so / .dylib.
 
    --------------------------------------------------------------------------
    --  Path utilities

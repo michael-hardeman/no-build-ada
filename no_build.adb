@@ -1171,6 +1171,11 @@ package body No_Build is
    --  Compiler descriptors
    --------------------------------------------------------------------------
 
+   --  Forward declaration; body is below Active_Compiler since it
+   --  reads from the active descriptor's Source_Spec_Ext /
+   --  Source_Body_Ext fields.
+   function Gnat_Resolve_Source (Source : String) return String;
+
    function Gnatmake_Compiler return Ada_Compiler is begin
       return
         (Executable        => +"gnatmake",
@@ -1188,10 +1193,14 @@ package body No_Build is
               when MacOS           => Args ("-dynamiclib", "-undefined",
                                             "dynamic_lookup"),
               when Linux | Windows => Args ("-shared")),
-         Shared_Out_Flag      => +"-o",
-         Shared_Runtime_Probe => Find_Gnat_Runtime'Access,
-         Static_Archiver      => +"ar",
-         Static_Archiver_Flags => Args ("rcs"));
+         Shared_Out_Flag       => +"-o",
+         Shared_Runtime_Probe  => Find_Gnat_Runtime'Access,
+         Static_Archiver       => +"ar",
+         Static_Archiver_Flags => Args ("rcs"),
+         Source_Spec_Ext       => +".ads",
+         Source_Body_Ext       => +".adb",
+         Object_Ext            => +".o",
+         Resolve_Source        => Gnat_Resolve_Source'Access);
    end Gnatmake_Compiler;
 
    function ObjectAda_Compiler return Ada_Compiler is begin
@@ -1211,10 +1220,17 @@ package body No_Build is
               when MacOS           => Args ("-dynamiclib", "-undefined",
                                             "dynamic_lookup"),
               when Linux | Windows => Args ("-shared")),
-         Shared_Out_Flag      => +"-o",
-         Shared_Runtime_Probe => Find_Gnat_Runtime'Access,
-         Static_Archiver      => +"ar",
-         Static_Archiver_Flags => Args ("rcs"));
+         Shared_Out_Flag       => +"-o",
+         Shared_Runtime_Probe  => Find_Gnat_Runtime'Access,
+         Static_Archiver       => +"ar",
+         Static_Archiver_Flags => Args ("rcs"),
+         Source_Spec_Ext       => +".ads",
+         Source_Body_Ext       => +".adb",
+         Object_Ext            =>
+           (case Platform is
+              when Windows       => +".obj",
+              when Linux | MacOS => +".o"),
+         Resolve_Source        => null);
    end ObjectAda_Compiler;
 
    function Janus_Compiler return Ada_Compiler is begin
@@ -1230,10 +1246,37 @@ package body No_Build is
          Shared_Out_Flag      => +"-o",
          Shared_Runtime_Probe => null,
          Static_Archiver      => +"ar",
-         Static_Archiver_Flags => Args ("rcs"));
+         Static_Archiver_Flags => Args ("rcs"),
+         Source_Spec_Ext       => +".ads",
+         Source_Body_Ext       => +".adb",
+         Object_Ext            => +".obj",
+         Resolve_Source        => null);
    end Janus_Compiler;
 
    Active_Compiler : Ada_Compiler := Gnatmake_Compiler;
+
+   --  Gnatmake -c on a bare spec refuses to compile when a body is
+   --  present (exits 4).  Translate Source from the spec to the
+   --  sibling body when one exists; pass everything else through.
+   --  Extensions come from the active descriptor so a derived
+   --  GNAT-like compiler with different naming reuses this hook.
+   function Gnat_Resolve_Source (Source : String) return String is
+      Spec_Ext : constant String := To_String (Active_Compiler.Source_Spec_Ext);
+      Body_Ext : constant String := To_String (Active_Compiler.Source_Body_Ext);
+   begin
+      if Ends_With (Source, Spec_Ext) then
+         declare
+            Stem      : constant String :=
+              Source (Source'First .. Source'Last - Spec_Ext'Length);
+            Body_Path : constant String := Stem & Body_Ext;
+         begin
+            if Path_Exists (Body_Path) then
+               return Body_Path;
+            end if;
+         end;
+      end if;
+      return Source;
+   end Gnat_Resolve_Source;
 
    procedure Set_Compiler (C : Ada_Compiler) is begin
       Active_Compiler := C;
@@ -1273,59 +1316,60 @@ package body No_Build is
       Compile_Program (Source, Obj_Dir => Obj_Dir, Extra => Combined);
    end Compile;
 
-   --  Compile each .adb in Src_Dir; return the resulting .o paths.
-   function Build_Lib_Objects (Src_Dir : String;
-                               Obj_Dir : String;
-                               PIC     : Boolean;
-                               Extra   : Argument_List) return Argument_List
-   is
+   --  Gather every object file in Obj_Dir.  Build_Static_Lib /
+   --  Build_Shared_Lib call this after a Compile to pick up the
+   --  objects the active compiler just produced; that's why the spec
+   --  requires Obj_Dir to be dedicated to a single library.  The
+   --  extension comes from Active_Compiler.Object_Ext so non-GNAT
+   --  toolchains that emit .obj still work.
+   function Collect_Object_Files (Obj_Dir : String) return Argument_List is
       use Ada.Directories;
-      Eff_Obj : constant String := (if Obj_Dir /= "" then Obj_Dir else ".");
-      Flags   : Argument_List;
+      Result  : Argument_List;
       Search  : Search_Type;
       Dir_Ent : Directory_Entry_Type;
-      Acc     : Argument_List;
+      Pattern : constant String :=
+        "*" & To_String (Active_Compiler.Object_Ext);
    begin
-      --  Thread the active compiler's always-on flags through too --
-      --  Compile_Program does this for executables, so library builds
-      --  must match or Set_Compiler (..., Compile_Flags => ...) would
-      --  silently apply to one but not the other.
-      Flags.Append (Active_Compiler.Compile_Flags);
-      if PIC then
-         Flags.Append (Active_Compiler.PIC_Flags);
+      if not Exists (Obj_Dir) then
+         return Result;
       end if;
-      Flags.Append (Extra);
-
-      if Obj_Dir /= "" then
-         Make_Dirs (Obj_Dir);
-      end if;
-      Start_Search (Search, Src_Dir, "*",
+      Start_Search (Search, Obj_Dir, Pattern,
                     Filter => (Ordinary_File => True, others => False));
       while More_Entries (Search) loop
          Get_Next_Entry (Search, Dir_Ent);
-         declare
-            Name : constant String := Simple_Name (Dir_Ent);
-         begin
-            if Ends_With (Name, ".adb") then
-               Compile (Src_Dir / Name, Obj_Dir => Obj_Dir, Extra => Flags);
-               Acc.Append (Eff_Obj / No_Ext (Name) & ".o");
-            end if;
-         end;
+         Result.Append (Obj_Dir / Simple_Name (Dir_Ent));
       end loop;
       End_Search (Search);
-      return Acc;
-   end Build_Lib_Objects;
+      return Result;
+   end Collect_Object_Files;
 
-   procedure Build_Static_Lib (Src_Dir : String;
+   --  Run the active descriptor's Resolve_Source hook if it has one;
+   --  otherwise pass Source through unchanged.
+   function Resolved_Source (Source : String) return String is
+     (if Active_Compiler.Resolve_Source /= null
+      then Active_Compiler.Resolve_Source.all (Source)
+      else Source);
+
+   --  Dedicated obj subdir for one Build_*_Lib invocation.  Suffix
+   --  ("_static" / "_pic") keeps a static and a shared build of the
+   --  same library from clobbering each other when both run against
+   --  the same Output stem.
+   function Lib_Obj_Dir (Obj_Dir, Output, Suffix : String) return String is
+     (Obj_Dir / (No_Ext (Base_Name (Output)) & Suffix));
+
+   procedure Build_Static_Lib (Source  : String;
                                Output  : String;
-                               Obj_Dir : String        := "";
+                               Obj_Dir : String;
                                Extra   : Argument_List := No_Args)
    is
-      C       : Ada_Compiler renames Active_Compiler;
-      Objects : constant Argument_List :=
-        Build_Lib_Objects (Src_Dir, Obj_Dir, PIC => False, Extra => Extra);
+      C        : Ada_Compiler renames Active_Compiler;
+      Unit     : constant String := Resolved_Source (Source);
+      Sub_Obj  : constant String := Lib_Obj_Dir (Obj_Dir, Output, "_static");
+      Objects  : Argument_List;
       Cmd_Args : Argument_List;
    begin
+      Compile (Unit, Obj_Dir => Sub_Obj, Extra => Extra);
+      Objects := Collect_Object_Files (Sub_Obj);
       if Length (Objects) > 0 then
          Cmd_Args.Append (C.Static_Archiver_Flags);
          Cmd_Args.Append (Output);
@@ -1334,16 +1378,21 @@ package body No_Build is
       end if;
    end Build_Static_Lib;
 
-   procedure Build_Shared_Lib (Src_Dir : String;
+   procedure Build_Shared_Lib (Source  : String;
                                Output  : String;
-                               Obj_Dir : String        := "";
+                               Obj_Dir : String;
                                Extra   : Argument_List := No_Args)
    is
-      C        : Ada_Compiler renames Active_Compiler;
-      Objects  : constant Argument_List :=
-        Build_Lib_Objects (Src_Dir, Obj_Dir, PIC => True, Extra => Extra);
-      Cmd_Args : Argument_List;
+      C             : Ada_Compiler renames Active_Compiler;
+      Unit          : constant String := Resolved_Source (Source);
+      Sub_Obj       : constant String := Lib_Obj_Dir (Obj_Dir, Output, "_pic");
+      Compile_Extra : Argument_List := Active_Compiler.PIC_Flags;
+      Objects       : Argument_List;
+      Cmd_Args      : Argument_List;
    begin
+      Compile_Extra.Append (Extra);
+      Compile (Unit, Obj_Dir => Sub_Obj, Extra => Compile_Extra);
+      Objects := Collect_Object_Files (Sub_Obj);
       if Length (Objects) > 0 then
          Cmd_Args.Append (C.Shared_Flags);
          Cmd_Args.Append (To_String (C.Shared_Out_Flag));

@@ -244,11 +244,14 @@ begin
                       Extra       => Args ("-I."));
 
    Info ("building static library...");
-   Build_Static_Lib (Lib, Output => Lib / "libgreet.a", Obj_Dir => Obj);
+   Build_Static_Lib (Lib / "greet.ads",
+                     Output  => Lib / "libgreet.a",
+                     Obj_Dir => Obj);
 
    Info ("building shared library...");
-   Build_Shared_Lib (Lib, Output => Lib / "libgreet.so",
-                     Obj_Dir => Obj / "pic");
+   Build_Shared_Lib (Lib / "greet.ads",
+                     Output  => Lib / "libgreet.so",
+                     Obj_Dir => Obj);
 
    Info ("building tools...");
    For_Each_File (Tools,    Build_Tool'Access,            Suffix => ".adb");

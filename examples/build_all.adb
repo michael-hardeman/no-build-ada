@@ -44,17 +44,21 @@ begin
                       Obj_Dir     => Obj,
                       Extra       => Args ("-I."));
 
-   --  Compile library sources into obj/ (non-PIC) and produce a static
-   --  archive.  obj/greet.ali stays there so downstream Compile_Program
-   --  calls can satisfy the "with Greet" dependency without recompiling.
+   --  Build_*_Lib carves its own dedicated subdir under Obj_Dir
+   --  ("libgreet_static" / "libgreet_pic"), so it can be the same
+   --  Obj_Dir we use for executables without cross-contamination.
+   --  Source points at the .ads (the lib's "interface"); the active
+   --  GNAT descriptor's Resolve_Source hook swaps to greet.adb
+   --  because the body exists alongside.
    Info ("building static library...");
-   Build_Static_Lib (Lib, Output => Lib / "libgreet.a", Obj_Dir => Obj);
+   Build_Static_Lib (Lib / "greet.ads",
+                     Output  => Lib / "libgreet.a",
+                     Obj_Dir => Obj);
 
-   --  PIC objects live in a separate tree so they don't clobber the
-   --  non-PIC objects used for linking executables.
    Info ("building shared library...");
-   Build_Shared_Lib (Lib, Output => Lib / "libgreet.so",
-                     Obj_Dir => Obj / "pic");
+   Build_Shared_Lib (Lib / "greet.ads",
+                     Output  => Lib / "libgreet.so",
+                     Obj_Dir => Obj);
 
    Info ("building tools...");
    For_Each_File (Tools, Build_Tool'Access, Suffix => ".adb");

@@ -22,11 +22,15 @@ First tagged release.
 
 ### Changed
 
-- `Build_Lib_Objects` now threads `Active_Compiler.Compile_Flags`
-  through to each per-source compile, matching `Compile_Program`'s
-  behavior. Previously `Set_Compiler (... Compile_Flags => Args
-  ("-gnatwa"))` was honored for executables but silently dropped for
-  static and shared library builds.
+- `Build_Static_Lib` and `Build_Shared_Lib` now take a single `Source`
+  (path to a root `.ads` or `.adb`) instead of a `Src_Dir`, mirroring
+  `Compile_Program`. gnatmake compiles Source plus its `with`-closure
+  into the (now required) `Obj_Dir`, and the library is archived (or
+  linked) from every `.o` left there. Spec-only packages (`.ads`
+  without a body) are no longer silently skipped; hierarchical
+  packages are included only when reachable from the root unit's
+  `with`-closure. `Obj_Dir` must be dedicated to the library --
+  shared dirs would pull unrelated objects into the archive.
 - `Wait` (on a `Proc` returned by `Cmd_Async`) now embeds the exit
   status in the `Build_Error` message, matching `Cmd` / `Check_Exit`.
 - `Capture` writes its temporary stdout file under `$TMPDIR` (POSIX) /
