@@ -2,4 +2,5 @@
 *.ali
 *.exe
 obj/
-tmp_*/
+tmp_*/*.ll
+tests/test_phase1

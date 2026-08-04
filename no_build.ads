@@ -1,21 +1,27 @@
---  no_build.ads -- Ada port of https://github.com/tsoding/nob.h.
---  See README.md for usage.
+--  no_build.ads -- Ada 83 port of https://github.com/tsoding/nob.h.
+--  Targets the Ada83 compiler (MIL-STD-1815A plus the documented
+--  Extension_Command_Line vendor package).  See README.md for usage.
+--
+--  Differences from the Ada 95+ edition of this library:
+--    * For_Each_File and Walk_Dir are generics (Ada 83 has no
+--      access-to-subprogram types).
+--    * Argument_List is a plain private type: no controlled finalization,
+--      so storage is reclaimed by Clear or at process exit.
+--    * Build_Error carries no message text (Ada 83 exceptions cannot);
+--      Panic and every raiser log through Erro first.
+--    * Set_Log_Handler is gone; Set_Log_Level remains.
+--    * Compiler probe/resolver hooks are enumerations rather than
+--      function pointers.
+--    * Platform is a function, not a constant (a spec constant cannot
+--      call its own body's function during elaboration in Ada 83).
 
 with System;
-with Ada.Containers.Indefinite_Vectors;
-with Ada.Containers.Vectors;
-with Ada.Directories;
-with Ada.Environment_Variables;
-with Ada.Finalization;
-with Ada.Strings.Unbounded;
 
 package No_Build is
 
-   pragma Elaborate_Body;
-
-   Version : constant String := "0.1.0";
-   --  Library version (semver-ish).  Bump together with CHANGELOG.md on
-   --  every change to the public spec or to observable behavior.
+   Version : constant String := "0.2.0-ada83";
+   --  Library version.  Bump together with CHANGELOG.md on every change
+   --  to the public spec or to observable behavior.
 
    Build_Error : exception;
    --  Raised when any build step fails (non-zero exit code or OS error).
@@ -26,30 +32,33 @@ package No_Build is
 
    type Platform_Kind is (Linux, MacOS, Windows);
 
-   --  Expression function (not body-side) so Platform's elaboration can
-   --  call it.  WINDIR is Windows-only; /usr/bin/sw_vers ships on macOS only.
-   function Detect_Platform return Platform_Kind is
-     (if Ada.Environment_Variables.Exists ("WINDIR") then Windows
-      elsif Ada.Directories.Exists ("/usr/bin/sw_vers") then MacOS
-      else Linux);
-
-   Platform : constant Platform_Kind := Detect_Platform;
-   --  Use this instead of per-call OS checks.
+   function Platform return Platform_Kind;
+   --  Detected once on first call, then cached.  WINDIR is Windows-only;
+   --  /usr/bin/sw_vers ships on macOS only.
 
    --------------------------------------------------------------------------
-   --  Argument_List -- a Controlled, vector-backed container of strings.
-   --  Memory is managed automatically: deep-copy on assignment, free on
-   --  scope exit.  Build instances with the Args(...) constructors for the
-   --  common case, or Append / & when growing dynamically.
+   --  Str -- heap string used in Ada_Compiler record literals.  "+" is the
+   --  allocator shorthand; storage lives until process exit.
    --------------------------------------------------------------------------
 
-   type Argument_List is new Ada.Finalization.Controlled with private;
+   type Str is access String;
 
-   function No_Args return Argument_List;
+   function "+" (S : String) return Str;
+
+   function Value (S : Str) return String;
+   --  Null maps to "".
+
+   --------------------------------------------------------------------------
+   --  Argument_List -- a growable list of strings.  Build instances with
+   --  the Args(...) constructors for the common case, or Append / & when
+   --  growing dynamically.  Assignment shares storage; use Copy for a
+   --  deep copy and Clear to release one explicitly.
+   --------------------------------------------------------------------------
+
+   type Argument_List is private;
+
+   No_Args : constant Argument_List;
    --  Empty list.  Default for procedures that take an Argument_List.
-   --  Defined as a function (not constant) so it satisfies the
-   --  tag-indeterminate requirement for default parameter expressions of
-   --  primitive operations on a tagged type.
 
    function Args (A : String)                      return Argument_List;
    function Args (A, B : String)                   return Argument_List;
@@ -72,6 +81,12 @@ package No_Build is
    function Length  (List : Argument_List) return Natural;
    function Element (List : Argument_List; Index : Positive) return String;
 
+   function Copy  (List : Argument_List) return Argument_List;
+   procedure Clear (List : in out Argument_List);
+   --  Clear frees the list's storage and leaves it empty.  Other lists
+   --  sharing the same storage (through assignment) must not be used
+   --  afterwards.
+
    --------------------------------------------------------------------------
    --  Command execution
    --------------------------------------------------------------------------
@@ -88,10 +103,10 @@ package No_Build is
 
    procedure Cmd
      (Program : String;
-      Args    : Argument_List := No_Args;
-      Redir   : Redirect      := No_Redirect);
-   --  Locate Program on PATH, run it with Args, and wait for it to finish.
-   --  Prints "[CMD] program args..." to stderr before executing.
+      Args     : Argument_List := No_Args;
+      Redir    : Redirect      := No_Redirect);
+   --  Locate Program on PATH, run it with Args, and wait for it to
+   --  finish.  Prints "[CMD] program args..." to stderr before executing.
    --  Optionally redirects stdout/stderr to files via Redir.
    --  Raises Build_Error if the program is not found or exits non-zero.
 
@@ -100,30 +115,18 @@ package No_Build is
    --  Windows).
    --
    --  WARNING: shell syntax is NOT portable.  The two shells disagree
-   --  about almost everything.  Specifically:
-   --
-   --    * Pipes:           '|' works on both; '|&' is bash-only.
-   --    * Sequencing:      '&&' and ';' on POSIX; '&&' and '&' on cmd.exe.
-   --    * Variables:       $VAR / ${VAR} on POSIX vs %VAR% on cmd.exe.
-   --    * Quoting:         'single' quotes are POSIX-only; cmd.exe knows
-   --                       only double quotes and uses different escapes.
-   --    * Globbing:        POSIX expands * before the program runs;
-   --                       cmd.exe leaves * unexpanded for the program.
-   --    * PATH separator:  ':' on POSIX vs ';' on Windows.
-   --    * Slashes:         cmd.exe accepts both '/' and '\', but '/'
-   --                       sometimes parses as a flag introducer.
-   --
-   --  For portable command execution prefer Cmd, which calls execv /
-   --  CreateProcess directly with no shell in the loop.  If you need
-   --  pipes or redirection, branch on Platform and emit two Sh calls --
-   --  see examples/pipe.adb for the canonical pattern.
+   --  about almost everything (pipes, sequencing, variables, quoting,
+   --  globbing, PATH separators, slashes).  For portable command
+   --  execution prefer Cmd, which spawns directly with no shell in the
+   --  loop.  If you need pipes or redirection, branch on Platform and
+   --  emit two Sh calls -- see examples/pipe.adb.
 
    function Capture
-     (Program : String;
-      Args    : Argument_List := No_Args) return String;
+     (Program  : String;
+      Args     : Argument_List := No_Args) return String;
    --  Run Program with Args, capture stdout, and return it trimmed of
-   --  leading/trailing whitespace.  Stderr is inherited.  Raises Build_Error
-   --  on non-zero exit or if the program cannot be located.
+   --  leading/trailing whitespace.  Stderr is inherited.  Raises
+   --  Build_Error on non-zero exit or if the program cannot be located.
 
    --------------------------------------------------------------------------
    --  Parallel process execution
@@ -139,9 +142,9 @@ package No_Build is
    --  Growable list of Proc handles for batch waiting.
 
    function Cmd_Async
-     (Program : String;
-      Args    : Argument_List := No_Args;
-      Redir   : Redirect      := No_Redirect) return Proc;
+     (Program  : String;
+      Args     : Argument_List := No_Args;
+      Redir    : Redirect      := No_Redirect) return Proc;
    --  Spawn Program without waiting.  Returns a Proc handle.
    --  Raises Build_Error if the program is not found.
 
@@ -165,64 +168,60 @@ package No_Build is
    --  Gnatmake_Compiler).  Call Set_Compiler to retarget.
    --------------------------------------------------------------------------
 
-   type Runtime_Probe_Func is access function return String;
-   --  Returns a single token Build_Shared_Lib appends verbatim to the
-   --  shared-link command line, e.g. a path to libgnat.  Null disables.
+   type Runtime_Probe_Kind is (No_Probe, Gnat_Runtime_Probe);
+   --  Strategy Build_Shared_Lib uses to find a runtime token appended
+   --  verbatim to the shared-link command line.  Gnat_Runtime_Probe
+   --  derives the adalib/libgnat path from `gcc -print-libgcc-file-name`.
 
    function Find_Gnat_Runtime return String;
-   --  Default Runtime_Probe_Func for GNAT: derives the adalib/libgnat path
-   --  from `gcc -print-libgcc-file-name`.
+   --  The Gnat_Runtime_Probe implementation, callable directly.
 
-   type Source_Resolver_Func is access function (Source : String) return String;
-   --  Per-compiler hook called by Build_Static_Lib / Build_Shared_Lib
-   --  before invoking the compile.  Returns the path the compiler
-   --  should actually see; lets a toolchain rewrite Source to work
-   --  around its own quirks (e.g. swap a .ads for a sibling .adb on
-   --  GNAT).  Null means "use Source as given".
-
-   subtype US is Ada.Strings.Unbounded.Unbounded_String;
-   function "+" (Str : String) return US
-     renames Ada.Strings.Unbounded.To_Unbounded_String;
-   --  Local shorthand for Ada.Strings.Unbounded.To_Unbounded_String, used
-   --  in Ada_Compiler record literals.  Visible to users via `use No_Build;`.
+   type Source_Resolver_Kind is (No_Resolver, Gnat_Spec_To_Body);
+   --  Per-compiler rewrite applied by Build_Static_Lib / Build_Shared_Lib
+   --  before invoking the compile.  Gnat_Spec_To_Body swaps a .ads for a
+   --  sibling .adb when one exists, because gnatmake -c won't compile a
+   --  bare spec next to a body.  No_Resolver uses Source as given.
 
    type Ada_Compiler is record
-      Executable            : US;             --  e.g. "gnatmake"
+      Executable            : Str;            --  e.g. "gnatmake"
       Compile_Flags         : Argument_List;  --  always passed
       PIC_Flags             : Argument_List;  --  added for shared libs
-      Obj_Flag              : US;             --  selects obj dir
-      Out_Flag              : US;             --  selects output binary
-      Compile_Only_Flag     : US;             --  suppresses link
-      Shared_Linker         : US;             --  shared-lib driver
+      Obj_Flag              : Str;            --  selects obj dir
+      Out_Flag              : Str;            --  selects output binary
+      Compile_Only_Flag     : Str;            --  suppresses link
+      Shared_Linker         : Str;            --  shared-lib driver
       Shared_Flags          : Argument_List;  --  before Shared_Out_Flag
-      Shared_Out_Flag       : US;             --  shared-lib output flag
-      Shared_Runtime_Probe  : Runtime_Probe_Func := null;
-      Static_Archiver       : US;             --  static-lib archiver
+      Shared_Out_Flag       : Str;            --  shared-lib output flag
+      Shared_Runtime_Probe  : Runtime_Probe_Kind := No_Probe;
+      Static_Archiver       : Str;            --  static-lib archiver
       Static_Archiver_Flags : Argument_List;
 
       --  File-extension conventions used by Build_*_Lib (collecting
       --  produced objects, resolving spec/body siblings).  Defaults
       --  match the de-facto GNAT convention; override for toolchains
       --  that emit .obj or use a different source-naming scheme.
-      Source_Spec_Ext       : US := +".ads";
-      Source_Body_Ext       : US := +".adb";
-      Object_Ext            : US := +".o";
+      Source_Spec_Ext       : Str;
+      Source_Body_Ext       : Str;
+      Object_Ext            : Str;
 
-      --  Optional source-path rewriter; see Source_Resolver_Func.
-      Resolve_Source        : Source_Resolver_Func := null;
+      Resolve_Source        : Source_Resolver_Kind := No_Resolver;
    end record;
 
    function Gnatmake_Compiler  return Ada_Compiler;
-   --  Default GNAT descriptor; host-correct toolchain switches via Platform.
-   --  Override any field to retarget another toolchain.
+   --  Default GNAT descriptor; host-correct toolchain switches via
+   --  Platform.  Override any field to retarget another toolchain.
+
+   function Ada83_Compiler     return Ada_Compiler;
+   --  The Ada83 single-file LLVM compiler this port targets.
 
    function ObjectAda_Compiler return Ada_Compiler;
    --  PTC ObjectAda (formerly Aonix).  UNTESTED starting point; verify
    --  Obj_Flag / Compile_Only_Flag / driver name against your install.
 
    function Janus_Compiler     return Ada_Compiler;
-   --  RR Software Janus/Ada.  UNTESTED.  Janus uses a separate compile/link
-   --  pipeline; Executable likely needs to be a wrapper driving both steps.
+   --  RR Software Janus/Ada.  UNTESTED.  Janus uses a separate
+   --  compile/link pipeline; Executable likely needs to be a wrapper
+   --  driving both steps.
 
    procedure Set_Compiler (C : Ada_Compiler);
    --  Replace the active compiler descriptor.
@@ -232,8 +231,9 @@ package No_Build is
       Output  : String        := "";
       Obj_Dir : String        := "";
       Extra   : Argument_List := No_Args);
-   --  Compile and link Source using the active compiler.  Empty Output lets
-   --  the compiler pick the binary name; empty Obj_Dir puts objects in CWD.
+   --  Compile and link Source using the active compiler.  Empty Output
+   --  lets the compiler pick the binary name; empty Obj_Dir puts objects
+   --  in CWD.
 
    procedure Compile
      (Source  : String;
@@ -246,49 +246,21 @@ package No_Build is
       Output  : String;
       Obj_Dir : String;
       Extra   : Argument_List := No_Args);
-   --  Compile Source (a root unit) and its with-closure into Obj_Dir,
-   --  then archive every object file the compiler leaves there into
-   --  Output via the active Static_Archiver (default "ar rcs").
-   --
-   --  Source may be a spec or a body file.  The active compiler's
-   --  Resolve_Source hook (if any) gets first crack at rewriting it
-   --  -- e.g. the default GNAT descriptor swaps a .ads for a sibling
-   --  .adb when one exists, because gnatmake -c won't compile a bare
-   --  spec next to a body.  Spec-only packages pass through unchanged.
-   --
-   --  Build_Static_Lib (resp. Build_Shared_Lib) creates a dedicated
-   --  subdirectory of Obj_Dir named "<stem>_static" (resp.
-   --  "<stem>_pic"), where <stem> is Output's basename without
-   --  extension, and runs the compile into that subdir.  This means
-   --  Obj_Dir itself may be shared with other builds -- the subdir
-   --  is per-library and per-link-kind, so collecting every object
-   --  file (extension from Active_Compiler.Object_Ext) found there
-   --  pulls in exactly the lib's own objects.
-   --
-   --  Children of a hierarchical package are included only when they
-   --  are reachable from Source's with-closure.  Point at a "with
-   --  everything" aggregator unit to bundle a whole hierarchy.
-   --
-   --  The archive contains object files only -- no Ada binder
-   --  artifact.  Consumers that re-link with an Ada toolchain
-   --  regenerate the binder from whatever library-information files
-   --  the compiler leaves in the subdir (.ali files for GNAT).
-   --  Direct linking by a non-Ada toolchain will be missing
-   --  elaboration code; that case is not supported here.
+   --  Compile Source (a root unit) and its with-closure into a dedicated
+   --  "<stem>_static" subdirectory of Obj_Dir, then archive every object
+   --  file found there into Output via the active Static_Archiver
+   --  (default "ar rcs").  See the Ada 95 edition's spec for the full
+   --  contract; behavior is unchanged.
 
    procedure Build_Shared_Lib
      (Source  : String;
       Output  : String;
       Obj_Dir : String;
       Extra   : Argument_List := No_Args);
-   --  As Build_Static_Lib, but compiles with PIC_Flags and links the
-   --  collected object files into Output via the active Shared_Linker
-   --  (default "gcc -shared", "gcc -dynamiclib -undefined dynamic_lookup"
-   --  on macOS).  When Shared_Runtime_Probe is non-null its result is
-   --  appended so the Ada runtime is embedded into the library; the
-   --  default GNAT descriptor leaves it null on macOS, since the
-   --  -undefined dynamic_lookup link mode defers runtime resolution to
-   --  load time.
+   --  As Build_Static_Lib, but compiles with PIC_Flags into "<stem>_pic"
+   --  and links the collected objects into Output via the active
+   --  Shared_Linker.  When Shared_Runtime_Probe is not No_Probe its
+   --  result is appended so the Ada runtime is embedded.
 
    --------------------------------------------------------------------------
    --  Path utilities
@@ -300,7 +272,7 @@ package No_Build is
    function No_Ext    (Path : String) return String;
    --  Strip the trailing ".ext"; returns Path unchanged if no extension.
 
-   function Ends_With (Str, Suffix : String) return Boolean;
+   function Ends_With (S, Suffix : String) return Boolean;
    function Base_Name (Path : String) return String;
    --  Final path component (after the last '/' or '\').
 
@@ -342,18 +314,25 @@ package No_Build is
 
    function Needs_Rebuild (Output : String; Inputs : Argument_List)
      return Boolean;
-   --  Return True when Output is missing or is older than any file in Inputs.
+   --  Return True when Output is missing or is older than any file in
+   --  Inputs.
 
    --------------------------------------------------------------------------
-   --  Directory iteration
+   --  Directory iteration.  Both are generics: instantiate with the
+   --  subprogram to run, then call the instance.
+   --
+   --     procedure Show (File_Name : String);
+   --     procedure Show_All is new No_Build.For_Each_File (Show);
+   --     ...
+   --     Show_All ("src", ".adb");
    --------------------------------------------------------------------------
 
-   procedure For_Each_File
-     (Dir     : String;
-      Process : not null access procedure (File_Name : String);
-      Suffix  : String := "");
-   --  Call Process(simple_name) for each entry in Dir whose name ends with
-   --  Suffix.  Suffix => "" visits every entry (excluding "." / "..").
+   generic
+      with procedure Process (File_Name : String);
+   procedure For_Each_File (Dir : String; Suffix : String := "");
+   --  Call Process(simple_name) for each entry in Dir whose name ends
+   --  with Suffix.  Suffix => "" visits every entry (excluding "." and
+   --  "..").
 
    type Walk_Action is (Walk_Continue, Walk_Skip, Walk_Stop);
    --  Walk_Skip skips a directory's subtree; Walk_Stop aborts the walk.
@@ -368,33 +347,25 @@ package No_Build is
       Depth : Natural;                  --  0 = entries directly inside root
    end record;
 
-   procedure Walk_Dir
-     (Root : String;
-      Func : not null access function (E : Walk_Entry) return Walk_Action);
-   --  Pre-order recursive walk of Root.  Func is an anonymous access so
-   --  nested functions can be passed via 'Access without an accessibility
-   --  failure (same convention as For_Each_File).
+   generic
+      with function Func (E : Walk_Entry) return Walk_Action;
+   procedure Walk_Dir (Root : String);
+   --  Pre-order recursive walk of Root.
 
    --------------------------------------------------------------------------
    --  Logging
    --------------------------------------------------------------------------
 
    type Log_Level is (Verbose, Normal, Quiet, Silent);
-   --  Filter applied before the active Log_Handler runs:
+   --  Filter applied before a message is written:
    --    Verbose -- default; every tag including [CMD], [MKDIR], [CP], ...
    --    Normal  -- [INFO], [WARN], [ERRO] only
    --    Quiet   -- [WARN], [ERRO] only
    --    Silent  -- nothing.
 
    procedure Set_Log_Level (Level : Log_Level);
-   --  Default is Verbose.  Use Normal (or lower) to silence the per-command
-   --  [CMD] echo without writing a custom Log_Handler.
-
-   type Log_Handler is access procedure (Tag, Msg : String);
-
-   procedure Set_Log_Handler (Handler : Log_Handler);
-   --  Null restores the default handler ("[TAG] msg" on stderr).  The
-   --  handler is invoked only after the active Log_Level passes the tag.
+   --  Default is Verbose.  Use Normal (or lower) to silence the
+   --  per-command [CMD] echo.
 
    procedure Info  (Msg : String);  --  [INFO] to stderr
    procedure Warn  (Msg : String);  --  [WARN] to stderr
@@ -403,8 +374,9 @@ package No_Build is
 
    --------------------------------------------------------------------------
    --  Go_Rebuild_Urself(TM): call as the first statement in your build
-   --  procedure.  If Source_Path is newer than Binary_Path, recompiles and
-   --  re-execs, forwarding the original argv.
+   --  procedure.  If Source_Path is newer than Binary_Path, recompiles
+   --  and re-execs, forwarding the original argv (via
+   --  Extension_Command_Line).
    --------------------------------------------------------------------------
 
    procedure Go_Rebuild_Urself
@@ -415,33 +387,35 @@ package No_Build is
 
 private
 
-   package Arg_Vectors is new Ada.Containers.Indefinite_Vectors
-     (Index_Type => Positive, Element_Type => String);
+   type Str_Array is array (Positive range <>) of Str;
+   type Str_Array_Access is access Str_Array;
 
-   type Argument_List is new Ada.Finalization.Controlled with record
-      Items : Arg_Vectors.Vector;
+   type Argument_List is record
+      Items : Str_Array_Access;   --  null when Count = 0
+      Count : Natural := 0;
    end record;
+
+   No_Args : constant Argument_List := (Items => null, Count => 0);
 
    type Redirect is record
-      Stdout : US;   --  empty = inherit
-      Stderr : US;
+      Stdout : Str;   --  null = inherit
+      Stderr : Str;
    end record;
 
-   No_Redirect : constant Redirect :=
-     (Stdout => Ada.Strings.Unbounded.Null_Unbounded_String,
-      Stderr => Ada.Strings.Unbounded.Null_Unbounded_String);
+   No_Redirect : constant Redirect := (Stdout => null, Stderr => null);
 
    type Proc is record
-      Pid : System.Address := System.Null_Address;
+      Pid : Integer := -1;
    end record;
 
-   Invalid_Proc : constant Proc := (Pid => System.Null_Address);
+   Invalid_Proc : constant Proc := (Pid => -1);
 
-   package Proc_Vectors is new Ada.Containers.Vectors
-     (Index_Type => Positive, Element_Type => Proc);
+   type Proc_Array is array (Positive range <>) of Proc;
+   type Proc_Array_Access is access Proc_Array;
 
    type Proc_List is record
-      Items : Proc_Vectors.Vector;
+      Items : Proc_Array_Access;
+      Count : Natural := 0;
    end record;
 
 end No_Build;
