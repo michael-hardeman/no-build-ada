@@ -107,7 +107,7 @@ and *Removed* below.
 
 ### Compiler bugs found and fixed upstream
 
-Porting the library surfaced four defects in ada83, each fixed in that
+Porting the library surfaced five defects in ada83, each fixed in that
 repository with ACATS holding at 3561/3561:
 
 - A generic instantiated in another compilation unit emitted calls to
@@ -130,6 +130,11 @@ repository with ACATS holding at 3561/3561:
 - A name written without an actual parameter part resolved to whichever
   overload the package exported first, so the parameterless
   `Text_IO.End_Of_File` was rejected for want of a `File` argument.
+
+- A user-defined unary operator was never offered an operand whose type
+  comes from context, so `+"literal"` was rejected where
+  `+String'("literal")` compiled. Binary operators already allowed for
+  it; the unary case did not.
 
 Two further departures from bare MIL-STD-1815A were added to ada83 for
 this port: library subprograms carry a GNAT-style `_ada_` symbol prefix,

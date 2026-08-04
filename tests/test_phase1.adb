@@ -97,11 +97,11 @@ procedure Test_Phase1 is
    end Check_Paths;
 
    procedure Check_Str is
-      --  Qualified operand: the Ada83 compiler cannot yet resolve a bare
-      --  string literal as the operand of a user-defined unary operator.
-      S : constant Str := +String'("hello");
+      S : constant Str := +"hello";
+      Q : constant Str := +String'("qualified");
    begin
       Check (Value (S) = "hello", "STR ROUND-TRIP");
+      Check (Value (Q) = "qualified", "STR FROM QUALIFIED OPERAND");
       Check (Value (null) = "", "STR NULL VALUE");
    end Check_Str;
 
