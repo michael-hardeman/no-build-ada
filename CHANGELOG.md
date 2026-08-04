@@ -8,6 +8,19 @@ the patch bumps on behavior-preserving fixes.
 The library version is also surfaced as the `No_Build.Version` constant
 in `no_build.ads`.
 
+## Unreleased
+
+### Fixed
+
+- Child-side stdout/stderr redirection now calls `creat(2)` instead of
+  `open(2)`.  `open` is variadic, and on arm64 Darwin variadic arguments
+  are passed on the stack, so calling it through a fixed-arity access
+  type handed the kernel a garbage creation mode: redirect targets (and
+  therefore `Capture`'s temp file) could be created unreadable, making
+  `Capture` fail with `cannot read file:` on Apple Silicon.  `creat` is
+  non-variadic and means exactly `O_WRONLY | O_CREAT | O_TRUNC`, so the
+  per-platform flag literals are gone as well.
+
 ## 0.1.0 — 2026-05-19
 
 First tagged release.

@@ -73,10 +73,14 @@ package body No_Build is
       Old_FD, New_FD : Interfaces.C.int)
       return Interfaces.C.int with Convention => C;
 
-   type Open_Func is access function (
-      Path  : System.Address;
-      Flags : Interfaces.C.int;
-      Mode  : Interfaces.C.int)
+   --  creat(2), not open(2): open is variadic, and on arm64 Darwin the
+   --  variadic slots are passed on the stack, so calling it through a
+   --  fixed-arity prototype hands the callee a garbage creation mode.
+   --  creat is non-variadic everywhere and means exactly
+   --  open (Path, O_WRONLY | O_CREAT | O_TRUNC, Mode).
+   type Creat_Func is access function (
+      Path : System.Address;
+      Mode : Interfaces.C.int)
       return Interfaces.C.int with Convention => C;
 
    type Close_Func is access function (
@@ -95,7 +99,7 @@ package body No_Build is
    function To_Waitpid is new Ada.Unchecked_Conversion (System.Address, Waitpid_Func);
    function To_Exit    is new Ada.Unchecked_Conversion (System.Address, Exit_Func);
    function To_Dup2    is new Ada.Unchecked_Conversion (System.Address, Dup2_Func);
-   function To_Open    is new Ada.Unchecked_Conversion (System.Address, Open_Func);
+   function To_Creat   is new Ada.Unchecked_Conversion (System.Address, Creat_Func);
    function To_Close   is new Ada.Unchecked_Conversion (System.Address, Close_Func);
    function To_Rename  is new Ada.Unchecked_Conversion (System.Address, Rename_Func);
    function To_Getpid  is new Ada.Unchecked_Conversion (System.Address, Getpid_Func);
@@ -106,7 +110,7 @@ package body No_Build is
    C_Waitpid : Waitpid_Func := null;
    C_Exit    : Exit_Func    := null;
    C_Dup2    : Dup2_Func    := null;
-   C_Open    : Open_Func    := null;
+   C_Creat   : Creat_Func   := null;
    C_Close   : Close_Func   := null;
    C_Rename  : Rename_Func  := null;
    C_Getpid  : Getpid_Func  := null;
@@ -123,7 +127,7 @@ package body No_Build is
    POSIX_STDOUT_FD : constant Interfaces.C.int := 1;
    POSIX_STDERR_FD : constant Interfaces.C.int := 2;
 
-   --  open(2) creation mode for files we write: rw-r--r--.
+   --  creat(2) creation mode for files we write: rw-r--r--.
    POSIX_DEFAULT_FILE_MODE : constant Interfaces.C.int := 8#644#;
 
    --  Exit codes used by the forked child before it manages to execv:
@@ -143,25 +147,6 @@ package body No_Build is
    function Fork_Failed (Pid : Interfaces.C.int) return Boolean is (Pid < 0);
    function In_Child_Process (Pid : Interfaces.C.int) return Boolean is (Pid = 0);
 
-   --  POSIX open(2) flag bits.  Linux/glibc and macOS/Darwin disagree on
-   --  the numeric values of O_CREAT / O_TRUNC; O_WRONLY happens to match.
-   --  Windows never reaches Open_Flags (CreateFileA handles its file
-   --  creation), so the "when Windows" branch is just a syntactic
-   --  placeholder.
-   function Open_Flags return Interfaces.C.int is
-      Linux_O_WRONLY  : constant := 1;
-      Linux_O_CREAT   : constant := 64;
-      Linux_O_TRUNC   : constant := 512;
-      Darwin_O_WRONLY : constant := 1;
-      Darwin_O_CREAT  : constant := 16#200#;
-      Darwin_O_TRUNC  : constant := 16#400#;
-   begin
-      case Platform is
-         when MacOS           => return Interfaces.C.int (Darwin_O_WRONLY + Darwin_O_CREAT + Darwin_O_TRUNC);
-         when Linux | Windows => return Interfaces.C.int (Linux_O_WRONLY  + Linux_O_CREAT  + Linux_O_TRUNC);
-      end case;
-   end Open_Flags;
-
    procedure Load_Posix_Symbols is
       Lib : DL_Handle;
    begin
@@ -173,13 +158,13 @@ package body No_Build is
       C_Waitpid := To_Waitpid (Sym (Lib, "waitpid"));
       C_Exit    := To_Exit    (Sym (Lib, "_exit"));
       C_Dup2    := To_Dup2    (Sym (Lib, "dup2"));
-      C_Open    := To_Open    (Sym (Lib, "open"));
+      C_Creat   := To_Creat   (Sym (Lib, "creat"));
       C_Close   := To_Close   (Sym (Lib, "close"));
       C_Rename  := To_Rename  (Sym (Lib, "rename"));
       C_Getpid  := To_Getpid  (Sym (Lib, "getpid"));
 
       if C_Fork = null or else C_Execv = null or else C_Waitpid = null
-        or else C_Exit   = null or else C_Dup2   = null or else C_Open = null
+        or else C_Exit   = null or else C_Dup2   = null or else C_Creat = null
         or else C_Close  = null or else C_Rename = null
         or else C_Getpid = null
       then
@@ -703,14 +688,14 @@ package body No_Build is
       --  Argv (N + 1) stays Null_Ptr -- the NULL terminator.
    end Build_Argv;
 
-   --  Child-side fd redirection (open + dup2 + close).
+   --  Child-side fd redirection (creat + dup2 + close).
    procedure Redirect_FD (File_Path : String; Target_FD : Interfaces.C.int) is
       use Interfaces.C;
       use Interfaces.C.Strings;
       C_Path : chars_ptr := New_String (File_Path);
       FD     : int;
    begin
-      FD := C_Open (To_Address (C_Path), Open_Flags, POSIX_DEFAULT_FILE_MODE);
+      FD := C_Creat (To_Address (C_Path), POSIX_DEFAULT_FILE_MODE);
       Free (C_Path);
       if Syscall_Failed (FD) then
          C_Exit (Child_Exit_Setup_Failed);
