@@ -848,11 +848,13 @@ package body No_Build is
          end if;
       end loop;
 
+      -- The argument was passed unquoted ... 
       if not Needs_Quote then
          Append (B, Arg);
          return;
       end if;
 
+      -- Move through all of the args and handle them sequentially
       Append (B, '"');
       declare
          I        : Positive := Arg'First;

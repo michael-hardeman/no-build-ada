@@ -51,14 +51,14 @@ package No_Build is
    --  tag-indeterminate requirement for default parameter expressions of
    --  primitive operations on a tagged type.
 
-   function Args (A : String)                            return Argument_List;
-   function Args (A, B : String)                         return Argument_List;
-   function Args (A, B, C : String)                      return Argument_List;
-   function Args (A, B, C, D : String)                   return Argument_List;
-   function Args (A, B, C, D, E : String)                return Argument_List;
-   function Args (A, B, C, D, E, F : String)             return Argument_List;
-   function Args (A, B, C, D, E, F, G : String)          return Argument_List;
-   function Args (A, B, C, D, E, F, G, H : String)       return Argument_List;
+   function Args (A : String)                      return Argument_List;
+   function Args (A, B : String)                   return Argument_List;
+   function Args (A, B, C : String)                return Argument_List;
+   function Args (A, B, C, D : String)             return Argument_List;
+   function Args (A, B, C, D, E : String)          return Argument_List;
+   function Args (A, B, C, D, E, F : String)       return Argument_List;
+   function Args (A, B, C, D, E, F, G : String)    return Argument_List;
+   function Args (A, B, C, D, E, F, G, H : String) return Argument_List;
    --  Convenience constructors for 1..8 elements.  Beyond eight, chain
    --  with & or use Append.
 

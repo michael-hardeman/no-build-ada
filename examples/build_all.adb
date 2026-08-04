@@ -16,8 +16,7 @@ procedure Build_All is
    Examples : constant String := "examples";
    Lib      : constant String := "examples/lib";
 
-   procedure Build_Tool (Tool : String) is
-   begin
+   procedure Build_Tool (Tool : String) is begin
       Compile_Program (Tools / Tool, Output => Tools / No_Ext (Tool),
                        Obj_Dir => Obj);
    end Build_Tool;

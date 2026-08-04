@@ -8,8 +8,7 @@
 
 with No_Build; use No_Build;
 
-procedure Pipe is
-begin
+procedure Pipe is begin
    case Platform is
       when Linux | MacOS =>
          Sh ("echo 'Hello, World!' | examples/tools/rot13"
