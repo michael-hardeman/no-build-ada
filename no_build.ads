@@ -19,7 +19,7 @@ with System;
 
 package No_Build is
 
-   Version : constant String := "0.2.0-ada83";
+   Version : constant String := "0.1.0-ada83";
    --  Library version.  Bump together with CHANGELOG.md on every change
    --  to the public spec or to observable behavior.
 
@@ -208,20 +208,11 @@ package No_Build is
    end record;
 
    function Gnatmake_Compiler  return Ada_Compiler;
-   --  Default GNAT descriptor; host-correct toolchain switches via
-   --  Platform.  Override any field to retarget another toolchain.
+   --  GNAT in Ada 83 mode (-gnat83); host-correct toolchain switches
+   --  via Platform.  Override any field to retarget another toolchain.
 
    function Ada83_Compiler     return Ada_Compiler;
    --  The Ada83 single-file LLVM compiler this port targets.
-
-   function ObjectAda_Compiler return Ada_Compiler;
-   --  PTC ObjectAda (formerly Aonix).  UNTESTED starting point; verify
-   --  Obj_Flag / Compile_Only_Flag / driver name against your install.
-
-   function Janus_Compiler     return Ada_Compiler;
-   --  RR Software Janus/Ada.  UNTESTED.  Janus uses a separate
-   --  compile/link pipeline; Executable likely needs to be a wrapper
-   --  driving both steps.
 
    procedure Set_Compiler (C : Ada_Compiler);
    --  Replace the active compiler descriptor.

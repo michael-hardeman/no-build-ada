@@ -3,9 +3,23 @@
 --  descriptors.  Subprograms that need the OS layer (phases 2..5) log
 --  an [ERRO] and raise Build_Error until their phase lands.
 
+with Unchecked_Conversion;
 with Unchecked_Deallocation;
 
 package body No_Build is
+
+   type Long is range -(2 ** 63) .. 2 ** 63 - 1;
+
+   type Address_Array is array (Positive range <>) of System.Address;
+
+   type Stat_Words is array (1 .. 18) of Long;
+
+   Open_Write_Create_Truncate : constant Integer := 577;
+   Mode_755                   : constant Integer := 493;
+   Mode_644                   : constant Integer := 420;
+   Seek_Set                   : constant Integer := 0;
+   Seek_End                   : constant Integer := 2;
+   Sysconf_Nprocessors_Onln   : constant Integer := 84;
 
    Active_Level : Log_Level := Verbose;
 
@@ -29,6 +43,78 @@ package body No_Build is
    function C_Stderr return System.Address;
    pragma Import (C, C_Stderr, "__ada_stderr");
 
+   function C_Fork return Integer;
+   pragma Import (C, C_Fork, "fork");
+
+   function C_Execvp (File : System.Address; Argv : System.Address)
+     return Integer;
+   pragma Import (C, C_Execvp, "execvp");
+
+   function C_Waitpid (Pid : Integer; Status : System.Address;
+                       Options : Integer) return Integer;
+   pragma Import (C, C_Waitpid, "waitpid");
+
+   procedure C_Exit_Process (Status : Integer);
+   pragma Import (C, C_Exit_Process, "_exit");
+
+   function C_Open (Path : System.Address; Flags : Integer; Mode : Integer)
+     return Integer;
+   pragma Import (C, C_Open, "open");
+
+   function C_Close (Fd : Integer) return Integer;
+   pragma Import (C, C_Close, "close");
+
+   function C_Dup2 (Old_Fd, New_Fd : Integer) return Integer;
+   pragma Import (C, C_Dup2, "dup2");
+
+   function C_Getpid return Integer;
+   pragma Import (C, C_Getpid, "getpid");
+
+   function C_Sysconf (Name : Integer) return Long;
+   pragma Import (C, C_Sysconf, "sysconf");
+
+   function C_Stat (Path : System.Address; Buf : System.Address)
+     return Integer;
+   pragma Import (C, C_Stat, "stat");
+
+   function C_Mkdir (Path : System.Address; Mode : Integer) return Integer;
+   pragma Import (C, C_Mkdir, "mkdir");
+
+   function C_Unlink (Path : System.Address) return Integer;
+   pragma Import (C, C_Unlink, "unlink");
+
+   function C_Rename (Old_Path, New_Path : System.Address) return Integer;
+   pragma Import (C, C_Rename, "rename");
+
+   function C_Chdir (Path : System.Address) return Integer;
+   pragma Import (C, C_Chdir, "chdir");
+
+   function C_Getcwd (Buffer : System.Address; Size : Long)
+     return System.Address;
+   pragma Import (C, C_Getcwd, "getcwd");
+
+   function C_Fopen (Path : System.Address; Mode : System.Address)
+     return System.Address;
+   pragma Import (C, C_Fopen, "fopen");
+
+   function C_Fclose (Stream : System.Address) return Integer;
+   pragma Import (C, C_Fclose, "fclose");
+
+   function C_Fread (Buffer : System.Address; Size, Count : Long;
+                     Stream : System.Address) return Long;
+   pragma Import (C, C_Fread, "fread");
+
+   function C_Fwrite (Buffer : System.Address; Size, Count : Long;
+                      Stream : System.Address) return Long;
+   pragma Import (C, C_Fwrite, "fwrite");
+
+   function C_Fseek (Stream : System.Address; Offset : Long;
+                     Whence : Integer) return Integer;
+   pragma Import (C, C_Fseek, "fseek");
+
+   function C_Ftell (Stream : System.Address) return Long;
+   pragma Import (C, C_Ftell, "ftell");
+
    --------------------------------------------------------------------------
    --  Internal helpers
    --------------------------------------------------------------------------
@@ -39,6 +125,31 @@ package body No_Build is
      new Unchecked_Deallocation (Str_Array, Str_Array_Access);
    procedure Free_Proc_Storage is
      new Unchecked_Deallocation (Proc_Array, Proc_Array_Access);
+
+   function To_Address_Value is
+     new Unchecked_Conversion (Long, System.Address);
+   function To_Long_Value is
+     new Unchecked_Conversion (System.Address, Long);
+
+   function Null_Addr return System.Address is
+   begin
+      return To_Address_Value (0);
+   end Null_Addr;
+
+   function Is_Null (A : System.Address) return Boolean is
+   begin
+      return To_Long_Value (A) = 0;
+   end Is_Null;
+
+   function C_Str (S : String) return Str is
+   begin
+      return new String'(S & ASCII.NUL);
+   end C_Str;
+
+   function Data_Address (S : Str) return System.Address is
+   begin
+      return S.all (S.all'First)'Address;
+   end Data_Address;
 
    function File_Reachable (Path : String) return Boolean is
       C_Path : constant String := Path & ASCII.NUL;
@@ -400,7 +511,7 @@ package body No_Build is
       end if;
       return
         (Executable            => new String'("gnatmake"),
-         Compile_Flags         => No_Args,
+         Compile_Flags         => Args ("-gnat83"),
          PIC_Flags             => PIC,
          Obj_Flag              => new String'("-D"),
          Out_Flag              => new String'("-o"),
@@ -442,58 +553,6 @@ package body No_Build is
          Resolve_Source        => No_Resolver);
    end Ada83_Compiler;
 
-   function ObjectAda_Compiler return Ada_Compiler is
-      PIC    : Argument_List;
-      Shared : Argument_List;
-   begin
-      if Platform /= Windows then
-         Append (PIC, "-fpic");
-      end if;
-      if Platform = MacOS then
-         Shared := Args ("-dynamiclib", "-undefined", "dynamic_lookup");
-      else
-         Append (Shared, "-shared");
-      end if;
-      return
-        (Executable            => new String'("adabuild"),
-         Compile_Flags         => No_Args,
-         PIC_Flags             => PIC,
-         Obj_Flag              => new String'("-D"),
-         Out_Flag              => new String'("-o"),
-         Compile_Only_Flag     => new String'("-c"),
-         Shared_Linker         => new String'("gcc"),
-         Shared_Flags          => Shared,
-         Shared_Out_Flag       => new String'("-o"),
-         Shared_Runtime_Probe  => Gnat_Runtime_Probe,
-         Static_Archiver       => new String'("ar"),
-         Static_Archiver_Flags => Args ("rcs"),
-         Source_Spec_Ext       => new String'(".ads"),
-         Source_Body_Ext       => new String'(".adb"),
-         Object_Ext            => new String'(".o"),
-         Resolve_Source        => No_Resolver);
-   end ObjectAda_Compiler;
-
-   function Janus_Compiler return Ada_Compiler is
-   begin
-      return
-        (Executable            => new String'("janus"),
-         Compile_Flags         => No_Args,
-         PIC_Flags             => No_Args,
-         Obj_Flag              => new String'("/OBJDIR="),
-         Out_Flag              => new String'("/OUT="),
-         Compile_Only_Flag     => new String'("/COMPILE"),
-         Shared_Linker         => new String'("gcc"),
-         Shared_Flags          => Args ("-shared"),
-         Shared_Out_Flag       => new String'("-o"),
-         Shared_Runtime_Probe  => No_Probe,
-         Static_Archiver       => new String'("ar"),
-         Static_Archiver_Flags => Args ("rcs"),
-         Source_Spec_Ext       => new String'(".ads"),
-         Source_Body_Ext       => new String'(".adb"),
-         Object_Ext            => new String'(".obj"),
-         Resolve_Source        => No_Resolver);
-   end Janus_Compiler;
-
    procedure Set_Compiler (C : Ada_Compiler) is
    begin
       Active_Compiler     := C;
@@ -501,42 +560,179 @@ package body No_Build is
    end Set_Compiler;
 
    --------------------------------------------------------------------------
-   --  Phase 2..5 stubs
+   --  Process execution (POSIX)
+   --------------------------------------------------------------------------
+
+   function Join_From (List : Argument_List; From : Positive) return String is
+   begin
+      if From > Length (List) then
+         return "";
+      end if;
+      if From = Length (List) then
+         return Element (List, From);
+      end if;
+      return Element (List, From) & " " & Join_From (List, From + 1);
+   end Join_From;
+
+   procedure Redirect_Child_Fd (Path : String; Fd : Integer) is
+      C_Path  : constant String := Path & ASCII.NUL;
+      File_Fd : Integer;
+      Ignored : Integer;
+   begin
+      File_Fd := C_Open (C_Path'Address, Open_Write_Create_Truncate,
+                         Mode_644);
+      if File_Fd < 0 then
+         C_Exit_Process (126);
+      end if;
+      Ignored := C_Dup2 (File_Fd, Fd);
+      Ignored := C_Close (File_Fd);
+   end Redirect_Child_Fd;
+
+   function Spawn
+     (Program : String;
+      List    : Argument_List;
+      Redir   : Redirect) return Integer is
+      Argc    : constant Natural := Length (List);
+      Argv    : Address_Array (1 .. Argc + 2);
+      Holders : Str_Array (1 .. Argc + 1);
+      Pid     : Integer;
+      Ignored : Integer;
+   begin
+      Holders (1) := C_Str (Program);
+      Argv (1)    := Data_Address (Holders (1));
+      for I in 1 .. Argc loop
+         Holders (I + 1) := C_Str (Element (List, I));
+         Argv (I + 1)    := Data_Address (Holders (I + 1));
+      end loop;
+      Argv (Argc + 2) := Null_Addr;
+
+      Pid := C_Fork;
+      if Pid = 0 then
+         if Redir.Stdout /= null then
+            Redirect_Child_Fd (Redir.Stdout.all, 1);
+         end if;
+         if Redir.Stderr /= null then
+            Redirect_Child_Fd (Redir.Stderr.all, 2);
+         end if;
+         Ignored := C_Execvp (Argv (1), Argv'Address);
+         C_Exit_Process (127);
+      elsif Pid < 0 then
+         Panic ("fork failed for " & Program);
+      end if;
+
+      for I in Holders'Range loop
+         Free_String_Storage (Holders (I));
+      end loop;
+      return Pid;
+   end Spawn;
+
+   procedure Check_Child_Status (Status : Integer; Label : String) is
+      Signal_Bits : constant Integer := Status mod 128;
+      Exit_Code   : constant Integer := (Status / 256) mod 256;
+   begin
+      if Signal_Bits /= 0 then
+         Panic (Label & ": terminated by signal" &
+                Integer'Image (Signal_Bits));
+      elsif Exit_Code /= 0 then
+         Panic (Label & ": exit code" & Integer'Image (Exit_Code));
+      end if;
+   end Check_Child_Status;
+
+   function Trim_Whitespace (S : String) return String is
+      First : Integer := S'First;
+      Last  : Integer := S'Last;
+   begin
+      while First <= Last and then
+            (S (First) = ' ' or else S (First) = ASCII.HT or else
+             S (First) = ASCII.LF or else S (First) = ASCII.CR) loop
+         First := First + 1;
+      end loop;
+      while Last >= First and then
+            (S (Last) = ' ' or else S (Last) = ASCII.HT or else
+             S (Last) = ASCII.LF or else S (Last) = ASCII.CR) loop
+         Last := Last - 1;
+      end loop;
+      return S (First .. Last);
+   end Trim_Whitespace;
+
+   --------------------------------------------------------------------------
+   --  Phase 5..6 stubs
    --------------------------------------------------------------------------
 
    procedure Cmd
      (Program : String;
       Args     : Argument_List := No_Args;
       Redir    : Redirect      := No_Redirect) is
+      Pid     : Integer;
+      Status  : Integer := 0;
+      Ignored : Integer;
    begin
-      Unimplemented ("Cmd");
+      if Length (Args) = 0 then
+         Log ("CMD", Program);
+      else
+         Log ("CMD", Program & " " & Join_From (Args, 1));
+      end if;
+      Pid     := Spawn (Program, Args, Redir);
+      Ignored := C_Waitpid (Pid, Status'Address, 0);
+      Check_Child_Status (Status, Program);
    end Cmd;
 
    procedure Sh (Command : String) is
    begin
-      Unimplemented ("Sh");
+      if Platform = Windows then
+         Unimplemented ("Sh on Windows");
+      end if;
+      Cmd ("/bin/sh", Args ("-c", Command));
    end Sh;
 
    function Capture
      (Program  : String;
       Args     : Argument_List := No_Args) return String is
+      Pid_Image : constant String := Integer'Image (C_Getpid);
+      Temp_Path : constant String :=
+        "/tmp/no_build_capture_" & Pid_Image (2 .. Pid_Image'Last) & ".txt";
+      C_Temp    : constant String := Temp_Path & ASCII.NUL;
+      Ignored   : Integer;
    begin
-      Unimplemented ("Capture");
-      return "";
+      begin
+         Cmd (Program, Args, To_File (Stdout => Temp_Path));
+      exception
+         when Build_Error =>
+            Ignored := C_Unlink (C_Temp'Address);
+            raise;
+      end;
+      declare
+         Raw : constant String := Read_File (Temp_Path);
+      begin
+         Ignored := C_Unlink (C_Temp'Address);
+         return Trim_Whitespace (Raw);
+      end;
    end Capture;
 
    function Cmd_Async
      (Program  : String;
       Args     : Argument_List := No_Args;
       Redir    : Redirect      := No_Redirect) return Proc is
+      Result : Proc;
    begin
-      Unimplemented ("Cmd_Async");
-      return Invalid_Proc;
+      if Length (Args) = 0 then
+         Log ("CMD", Program & " &");
+      else
+         Log ("CMD", Program & " " & Join_From (Args, 1) & " &");
+      end if;
+      Result.Pid := Spawn (Program, Args, Redir);
+      return Result;
    end Cmd_Async;
 
    procedure Wait (P : Proc) is
+      Status  : Integer := 0;
+      Ignored : Integer;
    begin
-      Unimplemented ("Wait");
+      if P.Pid <= 0 then
+         Panic ("Wait: invalid process handle");
+      end if;
+      Ignored := C_Waitpid (P.Pid, Status'Address, 0);
+      Check_Child_Status (Status, "pid" & Integer'Image (P.Pid));
    end Wait;
 
    procedure Append (List : in out Proc_List; P : Proc) is
@@ -577,9 +773,12 @@ package body No_Build is
    end Wait_All;
 
    function N_Procs return Positive is
+      Count : constant Long := C_Sysconf (Sysconf_Nprocessors_Onln);
    begin
-      Unimplemented ("N_Procs");
-      return 1;
+      if Count < 1 then
+         return 1;
+      end if;
+      return Positive (Count);
    end N_Procs;
 
    function Find_Gnat_Runtime return String is
@@ -625,29 +824,79 @@ package body No_Build is
 
    function Path_Exists (Path : String) return Boolean is
    begin
-      Unimplemented ("Path_Exists");
-      return False;
+      return File_Reachable (Path);
    end Path_Exists;
 
-   function Is_Dir (Path : String) return Boolean is
+   procedure Stat_Path
+     (Path  : String;
+      Words : out Stat_Words;
+      RC    : out Integer) is
+      C_Path : constant String := Path & ASCII.NUL;
    begin
-      Unimplemented ("Is_Dir");
-      return False;
+      RC := C_Stat (C_Path'Address, Words'Address);
+   end Stat_Path;
+
+   function Is_Dir (Path : String) return Boolean is
+      Words : Stat_Words;
+      RC    : Integer;
+      Mode  : Integer;
+   begin
+      Stat_Path (Path, Words, RC);
+      if RC /= 0 then
+         return False;
+      end if;
+      Mode := Integer ((Words (4) mod 4294967296) mod 65536);
+      return (Mode / 4096) mod 16 = 4;
    end Is_Dir;
 
    procedure Make_Dir (Path : String) is
+      C_Path : constant String := Path & ASCII.NUL;
    begin
-      Unimplemented ("Make_Dir");
+      Log ("MKDIR", Path);
+      if Path_Exists (Path) then
+         Warn ("Make_Dir: " & Path & " already exists");
+         return;
+      end if;
+      if C_Mkdir (C_Path'Address, Mode_755) /= 0 then
+         Panic ("mkdir failed: " & Path);
+      end if;
    end Make_Dir;
 
    procedure Make_Dirs (Path : String) is
+      Ignored : Integer;
    begin
-      Unimplemented ("Make_Dirs");
+      Log ("MKDIRS", Path);
+      for I in Path'Range loop
+         if Is_Separator (Path (I)) and then I > Path'First then
+            declare
+               Prefix   : constant String := Path (Path'First .. I - 1);
+               C_Prefix : constant String := Prefix & ASCII.NUL;
+            begin
+               if not Path_Exists (Prefix) then
+                  Ignored := C_Mkdir (C_Prefix'Address, Mode_755);
+               end if;
+            end;
+         end if;
+      end loop;
+      if not Path_Exists (Path) then
+         declare
+            C_Path : constant String := Path & ASCII.NUL;
+         begin
+            if C_Mkdir (C_Path'Address, Mode_755) /= 0 then
+               Panic ("mkdir failed: " & Path);
+            end if;
+         end;
+      end if;
    end Make_Dirs;
 
    procedure Rename_Path (Old_Path, New_Path : String) is
+      C_Old : constant String := Old_Path & ASCII.NUL;
+      C_New : constant String := New_Path & ASCII.NUL;
    begin
-      Unimplemented ("Rename_Path");
+      Log ("RENAME", Old_Path & " -> " & New_Path);
+      if C_Rename (C_Old'Address, C_New'Address) /= 0 then
+         Panic ("rename failed: " & Old_Path & " -> " & New_Path);
+      end if;
    end Rename_Path;
 
    procedure Remove_Path (Path : String) is
@@ -656,8 +905,45 @@ package body No_Build is
    end Remove_Path;
 
    procedure Copy_File (Src, Dst : String) is
+      C_Src      : constant String := Src & ASCII.NUL;
+      C_Dst      : constant String := Dst & ASCII.NUL;
+      Read_Mode  : constant String := "rb" & ASCII.NUL;
+      Write_Mode : constant String := "wb" & ASCII.NUL;
+      Source     : System.Address;
+      Target     : System.Address;
+      Ignored    : Integer;
    begin
-      Unimplemented ("Copy_File");
+      Log ("CP", Src & " -> " & Dst);
+      Source := C_Fopen (C_Src'Address, Read_Mode'Address);
+      if Is_Null (Source) then
+         Panic ("Copy_File: cannot open " & Src);
+      end if;
+      Target := C_Fopen (C_Dst'Address, Write_Mode'Address);
+      if Is_Null (Target) then
+         Ignored := C_Fclose (Source);
+         Panic ("Copy_File: cannot create " & Dst);
+      end if;
+      declare
+         Buffer : String (1 .. 65536);
+         Got    : Long;
+         Put    : Long;
+      begin
+         loop
+            Got := C_Fread (Buffer'Address, 1, Long (Buffer'Length),
+                            Source);
+            exit when Got <= 0;
+            Put := C_Fwrite (Buffer'Address, 1, Got, Target);
+            if Put /= Got then
+               Ignored := C_Fclose (Source);
+               Ignored := C_Fclose (Target);
+               Panic ("Copy_File: short write to " & Dst);
+            end if;
+         end loop;
+      end;
+      Ignored := C_Fclose (Source);
+      if C_Fclose (Target) /= 0 then
+         Panic ("Copy_File: close failed for " & Dst);
+      end if;
    end Copy_File;
 
    procedure Copy_Dir (Src, Dst : String) is
@@ -666,37 +952,107 @@ package body No_Build is
    end Copy_Dir;
 
    function Read_File (Path : String) return String is
+      C_Path    : constant String := Path & ASCII.NUL;
+      Read_Mode : constant String := "rb" & ASCII.NUL;
+      Stream    : System.Address;
+      Size      : Long;
+      Ignored   : Integer;
    begin
-      Unimplemented ("Read_File");
-      return "";
+      Stream := C_Fopen (C_Path'Address, Read_Mode'Address);
+      if Is_Null (Stream) then
+         Panic ("Read_File: cannot open " & Path);
+      end if;
+      Ignored := C_Fseek (Stream, 0, Seek_End);
+      Size    := C_Ftell (Stream);
+      Ignored := C_Fseek (Stream, 0, Seek_Set);
+      declare
+         Result : String (1 .. Integer (Size));
+         Got    : Long;
+      begin
+         Got := C_Fread (Result'Address, 1, Size, Stream);
+         Ignored := C_Fclose (Stream);
+         if Got /= Size then
+            Panic ("Read_File: short read from " & Path);
+         end if;
+         return Result;
+      end;
    end Read_File;
 
    procedure Write_File (Path : String; Contents : String) is
+      C_Path     : constant String := Path & ASCII.NUL;
+      Write_Mode : constant String := "wb" & ASCII.NUL;
+      Stream     : System.Address;
+      Put        : Long;
    begin
-      Unimplemented ("Write_File");
+      Stream := C_Fopen (C_Path'Address, Write_Mode'Address);
+      if Is_Null (Stream) then
+         Panic ("Write_File: cannot create " & Path);
+      end if;
+      if Contents'Length > 0 then
+         Put := C_Fwrite (Contents'Address, 1, Long (Contents'Length),
+                          Stream);
+         if Put /= Long (Contents'Length) then
+            Panic ("Write_File: short write to " & Path);
+         end if;
+      end if;
+      if C_Fclose (Stream) /= 0 then
+         Panic ("Write_File: close failed for " & Path);
+      end if;
    end Write_File;
 
    function Get_Current_Dir return String is
+      Buffer : String (1 .. 4096);
    begin
-      Unimplemented ("Get_Current_Dir");
+      if Is_Null (C_Getcwd (Buffer'Address, Long (Buffer'Length))) then
+         Panic ("getcwd failed");
+      end if;
+      for I in Buffer'Range loop
+         if Buffer (I) = ASCII.NUL then
+            return Buffer (1 .. I - 1);
+         end if;
+      end loop;
+      Panic ("getcwd returned an unterminated path");
       return "";
    end Get_Current_Dir;
 
    procedure Set_Current_Dir (Path : String) is
+      C_Path : constant String := Path & ASCII.NUL;
    begin
-      Unimplemented ("Set_Current_Dir");
+      Log ("CD", Path);
+      if C_Chdir (C_Path'Address) /= 0 then
+         Panic ("chdir failed: " & Path);
+      end if;
    end Set_Current_Dir;
 
    function Is_Newer (Path1, Path2 : String) return Boolean is
+      Words1, Words2 : Stat_Words;
+      RC1, RC2       : Integer;
    begin
-      Unimplemented ("Is_Newer");
-      return False;
+      Stat_Path (Path1, Words1, RC1);
+      if RC1 /= 0 then
+         return False;
+      end if;
+      Stat_Path (Path2, Words2, RC2);
+      if RC2 /= 0 then
+         return True;
+      end if;
+      if Words1 (12) /= Words2 (12) then
+         return Words1 (12) > Words2 (12);
+      end if;
+      return Words1 (13) > Words2 (13);
    end Is_Newer;
 
    function Needs_Rebuild (Output : String; Inputs : Argument_List)
      return Boolean is
    begin
-      Unimplemented ("Needs_Rebuild");
+      if not Path_Exists (Output) then
+         return True;
+      end if;
+      for I in 1 .. Length (Inputs) loop
+         if Is_Newer (Element (Inputs, I), Output) then
+            return True;
+         end if;
+      end loop;
       return False;
    end Needs_Rebuild;
 
