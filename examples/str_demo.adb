@@ -1,9 +1,9 @@
 --  str_demo.adb -- demonstrate No_Build string/path utilities
---  (equivalent of the original string.c example)
 
-with No_Build; use No_Build;
+with No_Build;
 
 procedure Str_Demo is
+   use No_Build;
 
    procedure S (Label, Value : String) is
    begin
@@ -12,7 +12,11 @@ procedure Str_Demo is
 
    procedure B (Label : String; Value : Boolean) is
    begin
-      Info ("    " & Label & " == " & (if Value then "1" else "0"));
+      if Value then
+         Info ("    " & Label & " == 1");
+      else
+         Info ("    " & Label & " == 0");
+      end if;
    end B;
 
 begin

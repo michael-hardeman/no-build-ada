@@ -6,9 +6,11 @@
 --  on Windows.  Both pipe a short greeting through rot13 then hex; we
 --  then cat the file via No_Build.Cmd and clean up.
 
-with No_Build; use No_Build;
+with No_Build;
 
-procedure Pipe is begin
+procedure Pipe is
+   use No_Build;
+begin
    case Platform is
       when Linux | MacOS =>
          Sh ("echo 'Hello, World!' | examples/tools/rot13"

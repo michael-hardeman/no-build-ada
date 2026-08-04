@@ -1,92 +1,91 @@
 --  build_tests.adb -- build and run every test_*.adb in tests/.
 --
---  Bootstrap (one-time):
---    gnatmake -D tests/obj -I. tests/build_tests.adb -o tests/build_tests
+--  Bootstrap (one time only):
+--    sh bootstrap_tests.sh
 --    ./tests/build_tests
 --
---  Subsequent runs use Go_Rebuild_Urself.
+--  From then on just run ./tests/build_tests; Go_Rebuild_Urself
+--  recompiles it whenever this source changes.
+--
+--  Each test program prints PASSED, or one FAILED line per broken check,
+--  and exits non-zero only if it dies outright -- so a run is judged on
+--  what the program printed, not just on its status.
 
-with Ada.Environment_Variables;
-with Ada.Text_IO;
-with No_Build; use No_Build;
+with Text_IO;
+with No_Build;
 
 procedure Build_Tests is
+   use No_Build;
 
-   Obj    : constant String := "tests/obj";
-   Root   : constant String := "tests";
-   Report : constant String := Obj / "test_report.txt";
+   Root : constant String := "tests";
+   Lib  : constant String := "no_build.ll";
+   Out_File : constant String := "tests" / "last_run.txt";
 
-   Pass_Programs, Fail_Programs : Natural := 0;
-   Pass_Asserts,  Fail_Asserts  : Natural := 0;
+   Passed : Natural := 0;
+   Failed : Natural := 0;
 
-   procedure Read_Report is
-      use Ada.Text_IO;
-      File   : File_Type;
-      Buffer : String (1 .. 32);
-      Last   : Natural;
-   begin
-      Open (File, In_File, Report);
-      Get_Line (File, Buffer, Last);
-      Pass_Asserts := Pass_Asserts + Natural'Value (Buffer (1 .. Last));
-      Get_Line (File, Buffer, Last);
-      Fail_Asserts := Fail_Asserts + Natural'Value (Buffer (1 .. Last));
-      Close (File);
-   exception
-      when others =>
-         if Is_Open (File) then Close (File); end if;
-   end Read_Report;
-
-   procedure Build_And_Run (Test : String) is
+   procedure Run_One (Test : String) is
       Bin : constant String := Root / No_Ext (Test);
    begin
-      --  Skip the runner itself and the shared support unit (Test_Support
-      --  is pulled in transitively via each test's `with` clause).
-      if Test = "build_tests.adb" or else Test = "test_support.adb" then
+      if Test = "build_tests.adb" then
          return;
       end if;
 
-      Compile_Program (Root / Test,
-                       Output  => Bin,
-                       Obj_Dir => Obj,
-                       Extra   => Args ("-I.", "-I" & Root));
-
-      --  Pre-clear so a missing report means "the test crashed before
-      --  reporting" rather than "leftover from a prior run".
-      if Path_Exists (Report) then
-         Remove_Path (Report);
-      end if;
+      Compile_Program (Root / Test, Bin, Args (Lib), Args ("-I."));
 
       begin
-         Cmd (Bin);
-         Pass_Programs := Pass_Programs + 1;
+         Cmd (Bin, No_Args, To_File (Out_File));
       exception
          when Build_Error =>
-            Fail_Programs := Fail_Programs + 1;
+            null;   --  the report below decides; a crash shows up there
       end;
 
-      if Path_Exists (Report) then
-         Read_Report;
-         Remove_Path (Report);
-      end if;
-   end Build_And_Run;
+      declare
+         Report : constant String := Read_File (Out_File);
+         Ok     : Boolean := False;
+      begin
+         --  A test that neither passed nor reported anything crashed.
+         for I in Report'First .. Report'Last - 5 loop
+            if Report (I .. I + 5) = "PASSED" then
+               Ok := True;
+            end if;
+         end loop;
+         if Ok then
+            Passed := Passed + 1;
+            Text_IO.Put_Line ("  ok   " & No_Ext (Test));
+         else
+            Failed := Failed + 1;
+            Text_IO.Put_Line ("  FAIL " & No_Ext (Test));
+            if Report'Length > 0 then
+               Text_IO.Put (Report);
+            end if;
+         end if;
+      end;
+   end Run_One;
+
+   procedure Run_All is new For_Each_File (Run_One);
 
 begin
-   Go_Rebuild_Urself (Binary_Path => "./tests/build_tests",
-                      Source_Path => "tests/build_tests.adb",
-                      Obj_Dir     => Obj,
-                      Extra       => Args ("-I."));
+   Go_Rebuild_Urself ("./tests/build_tests", "tests/build_tests.adb",
+                      Args ("-I."));
 
-   Ada.Environment_Variables.Set ("NO_BUILD_TEST_REPORT", Report);
+   Set_Log_Level (Normal);
+   Info ("building the library...");
+   Compile_Module ("no_build.adb", Lib);
 
-   Info ("running test suite...");
-   For_Each_File (Root, Build_And_Run'Access, Suffix => ".adb");
+   Info ("running the test suite...");
+   Run_All (Root, ".adb");
 
-   Info ("Tests:" & Pass_Programs'Image & " test programs passed,"
-         & Fail_Programs'Image & " failed"
-         & " (asserts:" & Pass_Asserts'Image & " passed,"
-         & Fail_Asserts'Image & " failed)");
+   if Path_Exists (Out_File) then
+      Remove_Path (Out_File);
+   end if;
 
-   if Fail_Programs > 0 then
+   Text_IO.Put_Line ("");
+   Text_IO.Put_Line ("  " & Natural'Image (Passed + Failed) &
+                     " test programs:" & Natural'Image (Passed) &
+                     " passed," & Natural'Image (Failed) & " failed");
+
+   if Failed > 0 then
       Panic ("test failures");
    end if;
 end Build_Tests;

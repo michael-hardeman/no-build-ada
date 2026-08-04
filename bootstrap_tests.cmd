@@ -1,4 +1,6 @@
 @ECHO OFF
+REM One-time bootstrap of the test runner.  From then on run
+REM tests\build_tests.exe -- it rebuilds itself when its source changes.
 
-if not exist tests\obj mkdir tests\obj
-gnatmake.exe -D tests\obj -I. -Iwindows -Itests tests\build_tests.adb -o tests\build_tests.exe
+ada83.exe --ir no_build.adb -o no_build.ll || exit /b 1
+ada83.exe -I. tests\build_tests.adb no_build.ll -o tests\build_tests.exe

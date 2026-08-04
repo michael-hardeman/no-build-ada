@@ -9,3 +9,14 @@ tests/test_phase1
 tests/test_phase2
 tests/test_phase3
 tests/test_phase4
+tests/build_tests
+examples/build_all
+examples/file
+examples/foreach
+examples/lib_demo
+examples/logging
+examples/pipe
+examples/str_demo
+examples/tools/cat
+examples/tools/hex
+examples/tools/rot13

@@ -1,42 +1,28 @@
---  cat.adb -- concatenate files to stdout
+--  cat.adb -- concatenate the named files to stdout
 
-with GNAT.OS_Lib; use GNAT.OS_Lib;
-with Ada.Text_IO;
-with Ada.Command_Line;
+with Text_IO;
+with Command_Line;
 
 procedure Cat is
 
-   Buffer : String (1 .. 4096);
-
    procedure Cat_File (Path : String) is
-      FD : constant File_Descriptor := Open_Read (Path, Binary);
-      N  : Integer;
+      File : Text_IO.File_Type;
+      Line : String (1 .. 4096);
+      Last : Natural;
    begin
-      if FD = Invalid_FD then
-         Ada.Text_IO.Put_Line
-           (Ada.Text_IO.Standard_Error, "ERROR: could not open file: " & Path);
-         OS_Exit (1);
-      end if;
-      loop
-         N := Read (FD, Buffer'Address, Buffer'Length);
-         exit when N <= 0;
-         if Write (Standout, Buffer'Address, N) /= N then
-            Ada.Text_IO.Put_Line
-              (Ada.Text_IO.Standard_Error, "ERROR: write failed");
-            OS_Exit (1);
-         end if;
+      Text_IO.Open (File, Text_IO.In_File, Path);
+      while not Text_IO.End_Of_File (File) loop
+         Text_IO.Get_Line (File, Line, Last);
+         Text_IO.Put_Line (Line (1 .. Last));
       end loop;
-      Close (FD);
+      Text_IO.Close (File);
+   exception
+      when Text_IO.Name_Error =>
+         Text_IO.Put_Line ("ERROR: could not open file: " & Path);
    end Cat_File;
 
 begin
-   if Ada.Command_Line.Argument_Count < 1 then
-      Ada.Text_IO.Put_Line
-        (Ada.Text_IO.Standard_Error, "USAGE: cat <file...>");
-      OS_Exit (1);
-   end if;
-
-   for I in 1 .. Ada.Command_Line.Argument_Count loop
-      Cat_File (Ada.Command_Line.Argument (I));
+   for I in 1 .. Command_Line.Argument_Count loop
+      Cat_File (Command_Line.Argument (I));
    end loop;
 end Cat;

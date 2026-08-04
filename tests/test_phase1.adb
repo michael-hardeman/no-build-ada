@@ -82,6 +82,10 @@ procedure Test_Phase1 is
       Check ("a" / "b" = "a/b", "PATH JOIN");
       Check ("" / "b" = "b", "JOIN EMPTY LEFT");
       Check ("a" / "" = "a", "JOIN EMPTY RIGHT");
+      Check ("foo/" / "bar" = "foo/bar", "JOIN KEEPS EXISTING SEPARATOR");
+      Check ("foo\" / "bar" = "foo\bar", "JOIN KEEPS BACKSLASH");
+      Check (Ends_With ("x", ""), "ENDS_WITH EMPTY SUFFIX");
+      Check (not Ends_With ("", ".adb"), "ENDS_WITH EMPTY STRING");
       Check (No_Ext ("dir/file.adb") = "dir/file", "NO_EXT");
       Check (No_Ext ("dir.d/file") = "dir.d/file", "NO_EXT DOTTED DIR");
       Check (No_Ext ("plain") = "plain", "NO_EXT PLAIN");

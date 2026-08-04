@@ -1,4 +1,6 @@
 @ECHO OFF
+REM One-time bootstrap of the examples build script.  From then on run
+REM examples\build_all.exe -- it rebuilds itself when its source changes.
 
-if not exist examples\obj mkdir examples\obj
-gnatmake.exe -D examples\obj -I. -Iwindows examples\build_all.adb -o examples\build_all.exe
+ada83.exe --ir no_build.adb -o no_build.ll || exit /b 1
+ada83.exe -I. examples\build_all.adb no_build.ll -o examples\build_all.exe

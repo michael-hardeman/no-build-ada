@@ -1,69 +1,67 @@
 --  build_all.adb -- example build script using No_Build
 --
 --  Bootstrap (one time only):
---    gnatmake -D examples/obj -I. examples/build_all.adb -o examples/build_all
+--    sh bootstrap.sh
 --    ./examples/build_all
 --
 --  From then on just run ./examples/build_all -- it recompiles itself
---  automatically whenever this source changes.
+--  whenever this source changes.
 
-with No_Build; use No_Build;
+with No_Build;
 
 procedure Build_All is
+   use No_Build;
 
-   Obj      : constant String := "examples/obj";
-   Tools    : constant String := "examples/tools";
    Examples : constant String := "examples";
+   Tools    : constant String := "examples/tools";
    Lib      : constant String := "examples/lib";
+   Library  : constant String := "no_build.ll";
+   Greet_LL : constant String := "examples/lib/greet.ll";
 
-   procedure Build_Tool (Tool : String) is begin
-      Compile_Program (Tools / Tool, Output => Tools / No_Ext (Tool),
-                       Obj_Dir => Obj);
+   procedure Build_Tool (Tool : String) is
+   begin
+      Compile_Program (Tools / Tool, Tools / No_Ext (Tool));
    end Build_Tool;
 
-   --  Pass -I examples/lib so the compiler finds library specs and any
-   --  out-of-date bodies.  -I. lets it find No_Build at the project root.
-   --  Skip build_all.adb itself; Go_Rebuild_Urself already handles it.
+   --  Every example links the library module, and lib_demo also links
+   --  Greet.  Skip build_all itself; Go_Rebuild_Urself handles it.
    procedure Build_And_Run_Example (Example : String) is
-      Bin : constant String := Examples / No_Ext (Example);
+      Bin     : constant String := Examples / No_Ext (Example);
+      Modules : Argument_List;
    begin
       if Example = "build_all.adb" then
          return;
       end if;
-      Compile_Program (Examples / Example,
-                       Output  => Bin,
-                       Obj_Dir => Obj,
-                       Extra   => Args ("-I.", "-I" & Lib));
+      Append (Modules, Library);
+      if Example = "lib_demo.adb" then
+         Append (Modules, Greet_LL);
+      end if;
+      Compile_Program (Examples / Example, Bin, Modules,
+                       Args ("-I.", "-I" & Lib));
+      Clear (Modules);
       Cmd (Bin);
    end Build_And_Run_Example;
 
+   procedure Build_Tools    is new For_Each_File (Build_Tool);
+   procedure Build_Examples is new For_Each_File (Build_And_Run_Example);
+
 begin
-   Go_Rebuild_Urself (Binary_Path => "./examples/build_all",
-                      Source_Path => "examples/build_all.adb",
-                      Obj_Dir     => Obj,
-                      Extra       => Args ("-I."));
+   Go_Rebuild_Urself ("./examples/build_all", "examples/build_all.adb",
+                      Args ("-I."));
 
-   --  Build_*_Lib carves its own dedicated subdir under Obj_Dir
-   --  ("libgreet_static" / "libgreet_pic"), so it can be the same
-   --  Obj_Dir we use for executables without cross-contamination.
-   --  Source points at the .ads (the lib's "interface"); the active
-   --  GNAT descriptor's Resolve_Source hook swaps to greet.adb
-   --  because the body exists alongside.
-   Info ("building static library...");
-   Build_Static_Lib (Lib / "greet.ads",
-                     Output  => Lib / "libgreet.a",
-                     Obj_Dir => Obj);
+   Info ("building the library...");
+   Compile_Module ("no_build.adb", Library);
 
-   Info ("building shared library...");
-   Build_Shared_Lib (Lib / "greet.ads",
-                     Output  => Lib / "libgreet.so",
-                     Obj_Dir => Obj);
+   --  ada83 has no archive stage, so a "library" here is an .ll module
+   --  that the programs needing it link alongside their own source.
+   Info ("building the greet module...");
+   Compile_Module (Lib / "greet.adb", Greet_LL);
 
    Info ("building tools...");
-   For_Each_File (Tools, Build_Tool'Access, Suffix => ".adb");
+   Build_Tools (Tools, ".adb");
 
    Info ("building and running examples...");
-   For_Each_File (Examples, Build_And_Run_Example'Access, Suffix => ".adb");
+   Build_Examples (Examples, ".adb");
 
    Info ("Done.");
 end Build_All;

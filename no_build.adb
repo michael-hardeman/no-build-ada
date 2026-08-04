@@ -500,6 +500,9 @@ package body No_Build is
       if Right'Length = 0 then
          return Left;
       end if;
+      if Is_Separator (Left (Left'Last)) then
+         return Left & Right;
+      end if;
       return Left & Separator & Right;
    end "/";
 
