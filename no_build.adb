@@ -38,7 +38,7 @@ package body No_Build is
    Platform_Known : Boolean       := False;
    Platform_Value : Platform_Kind := Linux;
 
-   Compiler_Path : Str;
+   Compiler : constant String := "ada83";
 
    --------------------------------------------------------------------------
    --  C bindings (phase 1 needs only these three)
@@ -532,23 +532,6 @@ package body No_Build is
       end loop;
       return Path;
    end Base_Name;
-
-   --------------------------------------------------------------------------
-   --  The compiler
-   --------------------------------------------------------------------------
-
-   procedure Set_Compiler (Path : String) is
-   begin
-      Compiler_Path := new String'(Path);
-   end Set_Compiler;
-
-   function Compiler return String is
-   begin
-      if Compiler_Path = null then
-         return "ada83";
-      end if;
-      return Compiler_Path.all;
-   end Compiler;
 
    --------------------------------------------------------------------------
    --  Process execution (POSIX)

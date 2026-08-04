@@ -172,15 +172,9 @@ package No_Build is
    --
    --  A native build takes one Ada source plus any number of .ll modules
    --  compiled earlier with --ir, and there is no object-file or archive
-   --  stage, so no library builders are offered.
+   --  stage, so no library builders are offered.  The compiler is run as
+   --  "ada83", found on PATH.
    --------------------------------------------------------------------------
-
-   procedure Set_Compiler (Path : String);
-   --  Point at a particular ada83 executable.  The default is "ada83",
-   --  found on PATH.
-
-   function Compiler return String;
-   --  The ada83 executable the calls below run.
 
    procedure Compile_Program
      (Source  : String;

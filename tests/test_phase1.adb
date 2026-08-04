@@ -1,7 +1,6 @@
 --  test_phase1.adb -- exercises the pure-Ada core of the Ada 83 port:
---  Argument_List, path utilities, Str, Redirect construction, logging
---  levels, platform probe, and compiler descriptors.  Prints PASSED, or
---  one FAILED line per broken check.
+--  Argument_List, path utilities, Str, logging levels and the platform
+--  probe.  Prints PASSED, or one FAILED line per broken check.
 
 with Text_IO;
 with No_Build;
@@ -102,14 +101,6 @@ procedure Test_Phase1 is
       Check (Value (null) = "", "STR NULL VALUE");
    end Check_Str;
 
-   procedure Check_Compilers is
-   begin
-      Check (Compiler = "ada83", "DEFAULT COMPILER IS ada83");
-      Set_Compiler ("/opt/ada83");
-      Check (Compiler = "/opt/ada83", "SET_COMPILER TAKES EFFECT");
-      Set_Compiler ("ada83");
-   end Check_Compilers;
-
    procedure Check_Platform_And_Logging is
       P : constant Platform_Kind := Platform;
    begin
@@ -131,7 +122,6 @@ begin
    Check_Args;
    Check_Paths;
    Check_Str;
-   Check_Compilers;
    Check_Platform_And_Logging;
    if not Failed then
       Text_IO.Put_Line ("PASSED");

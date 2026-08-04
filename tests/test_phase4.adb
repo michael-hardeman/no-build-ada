@@ -1,12 +1,10 @@
 --  test_phase4.adb -- exercises the compile layer of the Ada 83 port:
---  Set_Compiler/Compiler, Compile_Module, Compile_Program, and
---  Go_Rebuild_Urself.  Prints PASSED, or one FAILED line per broken check.
+--  Compile_Module, Compile_Program and Go_Rebuild_Urself.  Prints PASSED,
+--  or one FAILED line per broken check.
 --
---  Needs ada83 on PATH, or ADA83 naming it; the harness passes the
---  compiler under test as the first argument.
+--  Needs ada83 on PATH, since that is the compiler No_Build runs.
 
 with Text_IO;
-with Command_Line;
 with No_Build;
 
 procedure Test_Phase4 is
@@ -52,18 +50,6 @@ procedure Test_Phase4 is
         "   Undefined_Thing;" & ASCII.LF &
         "end Broken;" & ASCII.LF);
    end Write_Sources;
-
-   procedure Check_Compiler_Selection is
-   begin
-      Check (Compiler = "ada83", "DEFAULT COMPILER IS ada83");
-      Set_Compiler ("/nonexistent/ada83");
-      Check (Compiler = "/nonexistent/ada83", "SET_COMPILER TAKES EFFECT");
-      if Command_Line.Argument_Count >= 1 then
-         Set_Compiler (Command_Line.Argument (1));
-      else
-         Set_Compiler ("ada83");
-      end if;
-   end Check_Compiler_Selection;
 
    procedure Check_Compilation is
    begin
@@ -132,7 +118,6 @@ begin
    Sh ("rm -rf " & Root);
    Make_Dir (Root);
 
-   Check_Compiler_Selection;
    Write_Sources;
    Check_Compilation;
    Check_Failure_Paths;
