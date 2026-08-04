@@ -98,12 +98,26 @@ and *Removed* below.
 - `"/"` no longer doubles a separator the left operand already ends with:
   `"foo/" / "bar"` gives `"foo/bar"`, not `"foo//bar"`.
 
+### Platforms
+
+- Every system call goes through a new `Platform_Support` package, whose
+  body is chosen at bootstrap: `posix/` for Linux and macOS, `windows/`
+  for Windows. Nothing above it names a syscall, a struct offset or an
+  errno-style constant.
+
+- Being POSIX is not enough to share a body blindly. Linux and macOS
+  disagree about the layout of `struct stat` and `struct dirent`, about
+  the values of `O_CREAT` and `O_TRUNC`, and about the `sysconf`
+  selector for the processor count; the POSIX body answers each from
+  `Host`.
+
 ### Known limitations
 
-- Windows is unsupported. The OS layer binds POSIX entry points directly
-  (`fork`, `execvp`, `waitpid`, `stat`, `opendir`/`readdir_r`), so Linux
-  and macOS work; Windows needs a second set of bindings
-  (`CreateProcessA`, `FindFirstFileA`, …) selected as subunits.
+- Tested on Linux only. The macOS numbers come from the documented ABIs
+  and the Windows body has never been run; treat both as unverified.
+
+- On x86_64 macOS the C library exports `stat` as `stat$INODE64`. The
+  POSIX body imports the plain name, correct on arm64 macOS and Linux.
 
 ### Compiler bugs found and fixed upstream
 

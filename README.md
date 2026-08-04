@@ -8,7 +8,8 @@ This branch targets [Ada83](https://github.com/AdaDoom3/Ada83), a single-file
 Ada 83 compiler with an LLVM back end. It is MIL-STD-1815A only: no
 `Ada.Strings.Unbounded`, no `Ada.Containers`, no `Ada.Directories`, no
 access-to-subprogram types, no controlled types. Everything the build system
-needs from the operating system is bound directly with `pragma Interface`.
+needs from the operating system is bound directly with `pragma Import`,
+behind one package with a body per platform.
 
 ## Concept
 
@@ -17,19 +18,22 @@ once, and from then on `./build` recompiles itself whenever `build.ada`
 changes, before doing anything else (*Go Rebuild Urself* pattern).
 
 ```sh
-ada83 --ir no_build.adb -o no_build.ll        # one-time
-ada83 -I. build.ada no_build.ll -o build
-./build                                        # use forever after
+ada83 --ir -I. posix/platform_support.adb -o platform_support.ll  # one-time
+ada83 --ir -I. no_build.adb -o no_build.ll
+ada83 -I. build.ada no_build.ll platform_support.ll -o build
+./build                                                          # forever after
 ```
 
 ## Usage
 
-Copy two files into your project root alongside your build program:
+Copy these into your project root alongside your build program:
 
-| File            | Purpose                       |
-|-----------------|-------------------------------|
-| `no_build.ads`  | Package spec (API)            |
-| `no_build.adb`  | Package body (implementation) |
+| File | Purpose |
+|---|---|
+| `no_build.ads` | Package spec (API) |
+| `no_build.adb` | Package body (implementation) |
+| `platform_support.ads` | The operating system, as No_Build needs it |
+| `posix/` or `windows/` | One body for that spec; see [Platforms](#platforms) |
 
 ## Quick start
 
@@ -160,19 +164,39 @@ sh bootstrap_tests.sh    # one-time
 - [Ada83](https://github.com/AdaDoom3/Ada83) on PATH as `ada83`, including
   its `Command_Line` vendor package, which `Go_Rebuild_Urself` uses to
   forward the original argv.
-- A POSIX C library. The OS layer binds `fork`, `execvp`, `waitpid`,
-  `stat`, `opendir`/`readdir_r` and friends directly, so Linux and macOS
-  are supported and Windows is not yet — see below.
+- A POSIX C library on Linux and macOS, or Win32 on Windows. Which one
+  is reached is decided by the `Platform_Support` body the bootstrap
+  compiles; see below.
 
-## Windows
+## Platforms
 
-Not yet supported on this branch. The Ada 95 edition reached Windows by
-resolving every syscall through `dlopen`/`dlsym`, with a shim wrapping
-`LoadLibraryA`/`GetProcAddress`. Ada 83 has no access-to-subprogram types,
-so that design cannot be expressed: the port binds the C entry points
-directly instead, and the ones it binds are POSIX. Windows support means a
-second set of bindings (`CreateProcessA`, `FindFirstFileA`, …) selected as
-subunits at build time.
+Every system call goes through `Platform_Support`, whose spec is one file
+and whose body is one per family:
+
+| Body | Covers |
+|---|---|
+| `posix/platform_support.adb` | Linux and macOS |
+| `windows/platform_support.adb` | Windows |
+
+Nothing above that package names a syscall, a struct offset or an
+errno-style constant, so porting to another system means writing one more
+body and changing nothing else. The bootstrap scripts pick a body from
+`uname`; point them elsewhere to cross-compile.
+
+Being POSIX is not enough to share a body blindly: Linux and macOS
+disagree about the layout of `struct stat` and `struct dirent`, about the
+values of `O_CREAT` and `O_TRUNC`, and about the `sysconf` selector for
+the processor count. The POSIX body answers each of those from `Host`, in
+one place each.
+
+**Tested on Linux only.** The macOS constants and offsets are taken from
+the documented ABIs, and the Windows body is written against the Win32
+ABI and has never been run. Both should be treated as unverified until
+they have been.
+
+One known gap: on x86_64 macOS the C library exports `stat` as
+`stat$INODE64`, and the POSIX body imports the plain name, which is
+correct on arm64 macOS and on Linux.
 
 ## Changelog
 

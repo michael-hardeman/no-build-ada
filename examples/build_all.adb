@@ -16,6 +16,7 @@ procedure Build_All is
    Tools    : constant String := "examples/tools";
    Lib      : constant String := "examples/lib";
    Library  : constant String := "no_build.ll";
+   Platform : constant String := "platform_support.ll";
    Greet_LL : constant String := "examples/lib/greet.ll";
 
    procedure Build_Tool (Tool : String) is
@@ -33,6 +34,7 @@ procedure Build_All is
          return;
       end if;
       Append (Modules, Library);
+      Append (Modules, Platform);
       if Example = "lib_demo.adb" then
          Append (Modules, Greet_LL);
       end if;
@@ -50,7 +52,7 @@ begin
                       Args ("-I."));
 
    Info ("building the library...");
-   Compile_Module ("no_build.adb", Library);
+   Compile_Module ("no_build.adb", Library, Args ("-I."));
 
    --  ada83 has no archive stage, so a "library" here is an .ll module
    --  that the programs needing it link alongside their own source.

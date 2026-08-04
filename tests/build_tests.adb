@@ -18,7 +18,11 @@ procedure Build_Tests is
    use No_Build;
 
    Root : constant String := "tests";
-   Lib  : constant String := "no_build.ll";
+
+   --  The library and the system it sits on, both compiled to modules by
+   --  the bootstrap and linked into every test.
+   Lib      : constant String := "no_build.ll";
+   Platform : constant String := "platform_support.ll";
 
    --  Several suites exercise failure paths on purpose, so a passing run
    --  still writes [ERRO] lines and compiler diagnostics.  Both streams
@@ -36,7 +40,8 @@ procedure Build_Tests is
          return;
       end if;
 
-      Compile_Program (Root / Test, Bin, Args (Lib), Args ("-I."));
+      Compile_Program (Root / Test, Bin, Args (Lib, Platform),
+                       Args ("-I."));
 
       begin
          Cmd (Bin, No_Args, To_File (Out_File, Err_File));
@@ -83,7 +88,7 @@ begin
 
    Set_Log_Level (Normal);
    Info ("building the library...");
-   Compile_Module ("no_build.adb", Lib);
+   Compile_Module ("no_build.adb", Lib, Args ("-I."));
 
    Info ("running the test suite...");
    Run_All (Root, ".adb");
