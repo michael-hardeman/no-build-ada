@@ -3,6 +3,8 @@
 *.exe
 obj/
 tmp_*/
+tmp_*
 *.ll
 tests/test_phase1
 tests/test_phase2
+tests/test_phase3

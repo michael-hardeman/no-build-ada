@@ -3,6 +3,7 @@
 --  descriptors.  Subprograms that need the OS layer (phases 2..5) log
 --  an [ERRO] and raise Build_Error until their phase lands.
 
+with System;
 with Unchecked_Conversion;
 with Unchecked_Deallocation;
 
@@ -13,6 +14,16 @@ package body No_Build is
    type Address_Array is array (Positive range <>) of System.Address;
 
    type Stat_Words is array (1 .. 18) of Long;
+
+   Dirent_Type_Unknown   : constant Integer := 0;
+   Dirent_Type_Directory : constant Integer := 4;
+   Dirent_Type_Regular   : constant Integer := 8;
+
+   type Dirent_Buffer is array (1 .. 35) of Long;
+   type Dirent_Bytes_Array is array (1 .. 280) of Character;
+   type Dirent_Bytes_Ptr is access Dirent_Bytes_Array;
+
+   Dirent_Words : Dirent_Buffer;
 
    Open_Write_Create_Truncate : constant Integer := 577;
    Mode_755                   : constant Integer := 493;
@@ -115,6 +126,19 @@ package body No_Build is
    function C_Ftell (Stream : System.Address) return Long;
    pragma Import (C, C_Ftell, "ftell");
 
+   function C_Opendir (Path : System.Address) return System.Address;
+   pragma Import (C, C_Opendir, "opendir");
+
+   function C_Readdir_R (Dir : System.Address; Entry_Buf : System.Address;
+                         Result : System.Address) return Integer;
+   pragma Import (C, C_Readdir_R, "readdir_r");
+
+   function C_Closedir (Dir : System.Address) return Integer;
+   pragma Import (C, C_Closedir, "closedir");
+
+   function C_Rmdir (Path : System.Address) return Integer;
+   pragma Import (C, C_Rmdir, "rmdir");
+
    --------------------------------------------------------------------------
    --  Internal helpers
    --------------------------------------------------------------------------
@@ -130,6 +154,8 @@ package body No_Build is
      new Unchecked_Conversion (Long, System.Address);
    function To_Long_Value is
      new Unchecked_Conversion (System.Address, Long);
+   function To_Dirent_Bytes is
+     new Unchecked_Conversion (System.Address, Dirent_Bytes_Ptr);
 
    function Null_Addr return System.Address is
    begin
@@ -849,6 +875,77 @@ package body No_Build is
       return (Mode / 4096) mod 16 = 4;
    end Is_Dir;
 
+   procedure Close_Dir (Handle : System.Address) is
+      Ignored : Integer;
+   begin
+      Ignored := C_Closedir (Handle);
+   end Close_Dir;
+
+   function Open_Dir_Or_Panic (Path : String) return System.Address is
+      C_Path : constant String := Path & ASCII.NUL;
+      Handle : constant System.Address := C_Opendir (C_Path'Address);
+   begin
+      if Is_Null (Handle) then
+         Panic ("cannot open directory: " & Path);
+      end if;
+      return Handle;
+   end Open_Dir_Or_Panic;
+
+   procedure Next_Dir_Entry
+     (Dir        : System.Address;
+      Name_Buf   : out String;
+      Name_Last  : out Natural;
+      Entry_Type : out Integer) is
+      Result : System.Address;
+      RC     : Integer;
+      Bytes  : Dirent_Bytes_Ptr;
+   begin
+      Name_Last  := 0;
+      Entry_Type := Dirent_Type_Unknown;
+      RC := C_Readdir_R (Dir, Dirent_Words'Address, Result'Address);
+      if RC /= 0 or else Is_Null (Result) then
+         return;
+      end if;
+      Bytes      := To_Dirent_Bytes (Dirent_Words'Address);
+      Entry_Type := Character'Pos (Bytes (19));
+      for I in 20 .. 275 loop
+         if Bytes (I) = ASCII.NUL then
+            for J in 20 .. I - 1 loop
+               Name_Buf (Name_Buf'First + (J - 20)) := Bytes (J);
+            end loop;
+            Name_Last := Name_Buf'First + (I - 20) - 1;
+            return;
+         end if;
+      end loop;
+   end Next_Dir_Entry;
+
+   function Entry_Kind (Full_Path : String; Entry_Type : Integer)
+     return File_Kind is
+      Words  : Stat_Words;
+      RC     : Integer;
+      Nibble : Integer;
+   begin
+      if Entry_Type = Dirent_Type_Directory then
+         return Directory;
+      end if;
+      if Entry_Type = Dirent_Type_Regular then
+         return Regular_File;
+      end if;
+      Stat_Path (Full_Path, Words, RC);
+      if RC /= 0 then
+         return Other;
+      end if;
+      Nibble :=
+        Integer ((((Words (4) mod 4294967296) mod 65536) / 4096) mod 16);
+      if Nibble = 4 then
+         return Directory;
+      end if;
+      if Nibble = 8 then
+         return Regular_File;
+      end if;
+      return Other;
+   end Entry_Kind;
+
    procedure Make_Dir (Path : String) is
       C_Path : constant String := Path & ASCII.NUL;
    begin
@@ -899,9 +996,60 @@ package body No_Build is
       end if;
    end Rename_Path;
 
-   procedure Remove_Path (Path : String) is
+   procedure Remove_Tree (Path : String) is
+      Handle    : System.Address;
+      Name_Buf  : String (1 .. 256);
+      Name_Last : Natural;
+      Kind_Code : Integer;
+      Ignored   : Integer;
    begin
-      Unimplemented ("Remove_Path");
+      Handle := Open_Dir_Or_Panic (Path);
+      loop
+         Next_Dir_Entry (Handle, Name_Buf, Name_Last, Kind_Code);
+         exit when Name_Last = 0;
+         declare
+            Name : constant String := Name_Buf (1 .. Name_Last);
+         begin
+            if Name /= "." and then Name /= ".." then
+               declare
+                  Full : constant String := Path / Name;
+               begin
+                  if Entry_Kind (Full, Kind_Code) = Directory then
+                     Remove_Tree (Full);
+                  else
+                     declare
+                        C_Full : constant String := Full & ASCII.NUL;
+                     begin
+                        Ignored := C_Unlink (C_Full'Address);
+                     end;
+                  end if;
+               end;
+            end if;
+         end;
+      end loop;
+      Close_Dir (Handle);
+      declare
+         C_Path : constant String := Path & ASCII.NUL;
+      begin
+         if C_Rmdir (C_Path'Address) /= 0 then
+            Panic ("cannot remove directory: " & Path);
+         end if;
+      end;
+   end Remove_Tree;
+
+   procedure Remove_Path (Path : String) is
+      C_Path : constant String := Path & ASCII.NUL;
+   begin
+      Log ("RM", Path);
+      if Is_Dir (Path) then
+         Remove_Tree (Path);
+      elsif Path_Exists (Path) then
+         if C_Unlink (C_Path'Address) /= 0 then
+            Panic ("cannot remove file: " & Path);
+         end if;
+      else
+         Warn ("path does not exist: " & Path);
+      end if;
    end Remove_Path;
 
    procedure Copy_File (Src, Dst : String) is
@@ -947,8 +1095,44 @@ package body No_Build is
    end Copy_File;
 
    procedure Copy_Dir (Src, Dst : String) is
+      Handle    : System.Address;
+      Name_Buf  : String (1 .. 256);
+      Name_Last : Natural;
+      Kind_Code : Integer;
+      Ignored   : Integer;
    begin
-      Unimplemented ("Copy_Dir");
+      Make_Dirs (Dst);
+      Handle := Open_Dir_Or_Panic (Src);
+      begin
+      loop
+         Next_Dir_Entry (Handle, Name_Buf, Name_Last, Kind_Code);
+         exit when Name_Last = 0;
+         declare
+            Name : constant String := Name_Buf (1 .. Name_Last);
+         begin
+            if Name /= "." and then Name /= ".." then
+               declare
+                  From : constant String := Src / Name;
+                  To   : constant String := Dst / Name;
+               begin
+                  case Entry_Kind (From, Kind_Code) is
+                     when Directory =>
+                        Copy_Dir (From, To);
+                     when Regular_File =>
+                        Copy_File (From, To);
+                     when Symlink | Other =>
+                        null;
+                  end case;
+               end;
+            end if;
+         end;
+      end loop;
+      Close_Dir (Handle);
+      exception
+         when others =>
+            Close_Dir (Handle);
+            raise;
+      end;
    end Copy_Dir;
 
    function Read_File (Path : String) return String is
@@ -1057,13 +1241,90 @@ package body No_Build is
    end Needs_Rebuild;
 
    procedure For_Each_File (Dir : String; Suffix : String := "") is
+      Handle    : System.Address;
+      Name_Buf  : String (1 .. 256);
+      Name_Last : Natural;
+      Kind_Code : Integer;
    begin
-      Unimplemented ("For_Each_File");
+      Handle := Open_Dir_Or_Panic (Dir);
+      begin
+      loop
+         Next_Dir_Entry (Handle, Name_Buf, Name_Last, Kind_Code);
+         exit when Name_Last = 0;
+         declare
+            Name : constant String := Name_Buf (1 .. Name_Last);
+         begin
+            if Name /= "." and then Name /= ".." and then
+               (Suffix'Length = 0 or else Ends_With (Name, Suffix))
+            then
+               Process (Name);
+            end if;
+         end;
+      end loop;
+      Close_Dir (Handle);
+      exception
+         when others =>
+            Close_Dir (Handle);
+            raise;
+      end;
    end For_Each_File;
 
    procedure Walk_Dir (Root : String) is
+      Walk_Stopped : exception;
+
+      procedure Recurse (Dir : String; Depth : Natural) is
+         Handle    : System.Address;
+         Name_Buf  : String (1 .. 256);
+         Name_Last : Natural;
+         Kind_Code : Integer;
+      begin
+         Handle := Open_Dir_Or_Panic (Dir);
+         begin
+         loop
+            Next_Dir_Entry (Handle, Name_Buf, Name_Last, Kind_Code);
+            exit when Name_Last = 0;
+            declare
+               Name : constant String := Name_Buf (1 .. Name_Last);
+            begin
+               if Name /= "." and then Name /= ".." then
+                  declare
+                     Full : constant String := Dir / Name;
+                     Kind : constant File_Kind :=
+                       Entry_Kind (Full, Kind_Code);
+                     Action : constant Walk_Action :=
+                       Func ((Path_Len => Full'Length,
+                              Name_Len => Name'Length,
+                              Path     => Full,
+                              Name     => Name,
+                              Kind     => Kind,
+                              Depth    => Depth));
+                  begin
+                     case Action is
+                        when Walk_Stop =>
+                           raise Walk_Stopped;
+                        when Walk_Skip =>
+                           null;
+                        when Walk_Continue =>
+                           if Kind = Directory then
+                              Recurse (Full, Depth + 1);
+                           end if;
+                     end case;
+                  end;
+               end if;
+            end;
+         end loop;
+         Close_Dir (Handle);
+         exception
+            when others =>
+               Close_Dir (Handle);
+               raise;
+         end;
+      end Recurse;
    begin
-      Unimplemented ("Walk_Dir");
+      Recurse (Root, 0);
+   exception
+      when Walk_Stopped =>
+         null;
    end Walk_Dir;
 
    procedure Go_Rebuild_Urself
