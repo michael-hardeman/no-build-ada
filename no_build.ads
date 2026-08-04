@@ -10,8 +10,10 @@
 --    * Build_Error carries no message text (Ada 83 exceptions cannot);
 --      Panic and every raiser log through Erro first.
 --    * Set_Log_Handler is gone; Set_Log_Level remains.
---    * Compiler probe/resolver hooks are enumerations rather than
---      function pointers.
+--    * The Ada_Compiler descriptor is gone with it: this port drives the
+--      ada83 compiler only, so Compile_Program and Compile_Module speak
+--      its command line directly.  ada83 has no object-file or archive
+--      stage, so Build_Static_Lib and Build_Shared_Lib are gone too.
 --    * Platform is a function, not a constant (a spec constant cannot
 --      call its own body's function during elaboration in Ada 83).
 
@@ -37,8 +39,8 @@ package No_Build is
    --  /usr/bin/sw_vers ships on macOS only.
 
    --------------------------------------------------------------------------
-   --  Str -- heap string used in Ada_Compiler record literals.  "+" is the
-   --  allocator shorthand; storage lives until process exit.
+   --  Str -- a heap string, with "+" as the allocator shorthand.  Storage
+   --  lives until process exit.
    --------------------------------------------------------------------------
 
    type Str is access String;
@@ -163,95 +165,38 @@ package No_Build is
    --  parallel jobs: spawn at most N_Procs commands before Wait_All.
 
    --------------------------------------------------------------------------
-   --  Ada compilation.  Compile_Program, Compile, and Build_*_Lib drive an
-   --  Ada toolchain described by an Ada_Compiler record (default
-   --  Gnatmake_Compiler).  Call Set_Compiler to retarget.
+   --  Ada compilation.  This port drives one compiler -- ada83 -- and
+   --  speaks its command line directly rather than describing a toolchain:
+   --
+   --     ada83 [options] <input.ada ...> [-o <output>]
+   --
+   --  A native build takes one Ada source plus any number of .ll modules
+   --  compiled earlier with --ir, and there is no object-file or archive
+   --  stage, so no library builders are offered.
    --------------------------------------------------------------------------
 
-   type Runtime_Probe_Kind is (No_Probe, Gnat_Runtime_Probe);
-   --  Strategy Build_Shared_Lib uses to find a runtime token appended
-   --  verbatim to the shared-link command line.  Gnat_Runtime_Probe
-   --  derives the adalib/libgnat path from `gcc -print-libgcc-file-name`.
+   procedure Set_Compiler (Path : String);
+   --  Point at a particular ada83 executable.  The default is "ada83",
+   --  found on PATH.
 
-   function Find_Gnat_Runtime return String;
-   --  The Gnat_Runtime_Probe implementation, callable directly.
-
-   type Source_Resolver_Kind is (No_Resolver, Gnat_Spec_To_Body);
-   --  Per-compiler rewrite applied by Build_Static_Lib / Build_Shared_Lib
-   --  before invoking the compile.  Gnat_Spec_To_Body swaps a .ads for a
-   --  sibling .adb when one exists, because gnatmake -c won't compile a
-   --  bare spec next to a body.  No_Resolver uses Source as given.
-
-   type Ada_Compiler is record
-      Executable            : Str;            --  e.g. "gnatmake"
-      Compile_Flags         : Argument_List;  --  always passed
-      PIC_Flags             : Argument_List;  --  added for shared libs
-      Obj_Flag              : Str;            --  selects obj dir
-      Out_Flag              : Str;            --  selects output binary
-      Compile_Only_Flag     : Str;            --  suppresses link
-      Shared_Linker         : Str;            --  shared-lib driver
-      Shared_Flags          : Argument_List;  --  before Shared_Out_Flag
-      Shared_Out_Flag       : Str;            --  shared-lib output flag
-      Shared_Runtime_Probe  : Runtime_Probe_Kind := No_Probe;
-      Static_Archiver       : Str;            --  static-lib archiver
-      Static_Archiver_Flags : Argument_List;
-
-      --  File-extension conventions used by Build_*_Lib (collecting
-      --  produced objects, resolving spec/body siblings).  Defaults
-      --  match the de-facto GNAT convention; override for toolchains
-      --  that emit .obj or use a different source-naming scheme.
-      Source_Spec_Ext       : Str;
-      Source_Body_Ext       : Str;
-      Object_Ext            : Str;
-
-      Resolve_Source        : Source_Resolver_Kind := No_Resolver;
-   end record;
-
-   function Gnatmake_Compiler  return Ada_Compiler;
-   --  GNAT in Ada 83 mode (-gnat83); host-correct toolchain switches
-   --  via Platform.  Override any field to retarget another toolchain.
-
-   function Ada83_Compiler     return Ada_Compiler;
-   --  The Ada83 single-file LLVM compiler this port targets.
-
-   procedure Set_Compiler (C : Ada_Compiler);
-   --  Replace the active compiler descriptor.
+   function Compiler return String;
+   --  The ada83 executable the calls below run.
 
    procedure Compile_Program
      (Source  : String;
       Output  : String        := "";
-      Obj_Dir : String        := "";
+      Modules : Argument_List := No_Args;
       Extra   : Argument_List := No_Args);
-   --  Compile and link Source using the active compiler.  Empty Output
-   --  lets the compiler pick the binary name; empty Obj_Dir puts objects
-   --  in CWD.
+   --  Compile Source into an executable, linking any .ll Modules named
+   --  alongside it.  Empty Output lets ada83 name the binary.
 
-   procedure Compile
-     (Source  : String;
-      Obj_Dir : String        := "";
-      Extra   : Argument_List := No_Args);
-   --  Compile-only: passes Compile_Only_Flag (no link).
-
-   procedure Build_Static_Lib
-     (Source  : String;
-      Output  : String;
-      Obj_Dir : String;
-      Extra   : Argument_List := No_Args);
-   --  Compile Source (a root unit) and its with-closure into a dedicated
-   --  "<stem>_static" subdirectory of Obj_Dir, then archive every object
-   --  file found there into Output via the active Static_Archiver
-   --  (default "ar rcs").  See the Ada 95 edition's spec for the full
-   --  contract; behavior is unchanged.
-
-   procedure Build_Shared_Lib
-     (Source  : String;
-      Output  : String;
-      Obj_Dir : String;
-      Extra   : Argument_List := No_Args);
-   --  As Build_Static_Lib, but compiles with PIC_Flags into "<stem>_pic"
-   --  and links the collected objects into Output via the active
-   --  Shared_Linker.  When Shared_Runtime_Probe is not No_Probe its
-   --  result is appended so the Ada runtime is embedded.
+   procedure Compile_Module
+     (Source : String;
+      Output : String        := "";
+      Extra  : Argument_List := No_Args);
+   --  Compile Source to textual LLVM IR (--ir), the form Compile_Program
+   --  links through Modules.  Empty Output writes <source>.ll beside the
+   --  source, as ada83 does.
 
    --------------------------------------------------------------------------
    --  Path utilities
@@ -366,14 +311,12 @@ package No_Build is
    --------------------------------------------------------------------------
    --  Go_Rebuild_Urself(TM): call as the first statement in your build
    --  procedure.  If Source_Path is newer than Binary_Path, recompiles
-   --  and re-execs, forwarding the original argv (via
-   --  Extension_Command_Line).
+   --  and re-execs, forwarding the original argv (via Command_Line).
    --------------------------------------------------------------------------
 
    procedure Go_Rebuild_Urself
      (Binary_Path : String;
       Source_Path : String;
-      Obj_Dir     : String        := "";
       Extra       : Argument_List := No_Args);
 
 private

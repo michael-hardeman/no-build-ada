@@ -103,14 +103,11 @@ procedure Test_Phase1 is
    end Check_Str;
 
    procedure Check_Compilers is
-      G : constant Ada_Compiler := Gnatmake_Compiler;
-      A : constant Ada_Compiler := Ada83_Compiler;
    begin
-      Check (Value (G.Executable) = "gnatmake", "GNATMAKE EXECUTABLE");
-      Check (G.Resolve_Source = Gnat_Spec_To_Body, "GNAT RESOLVER");
-      Check (Value (A.Executable) = "ada83", "ADA83 EXECUTABLE");
-      Check (Value (A.Compile_Only_Flag) = "--ir", "ADA83 IR FLAG");
-      Check (Value (A.Object_Ext) = ".ll", "ADA83 OBJECT EXT");
+      Check (Compiler = "ada83", "DEFAULT COMPILER IS ada83");
+      Set_Compiler ("/opt/ada83");
+      Check (Compiler = "/opt/ada83", "SET_COMPILER TAKES EFFECT");
+      Set_Compiler ("ada83");
    end Check_Compilers;
 
    procedure Check_Platform_And_Logging is

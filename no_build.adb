@@ -3,6 +3,7 @@
 --  descriptors.  Subprograms that need the OS layer (phases 2..5) log
 --  an [ERRO] and raise Build_Error until their phase lands.
 
+with Command_Line;
 with System;
 with Unchecked_Conversion;
 with Unchecked_Deallocation;
@@ -37,8 +38,7 @@ package body No_Build is
    Platform_Known : Boolean       := False;
    Platform_Value : Platform_Kind := Linux;
 
-   Active_Compiler_Set : Boolean := False;
-   Active_Compiler     : Ada_Compiler;
+   Compiler_Path : Str;
 
    --------------------------------------------------------------------------
    --  C bindings (phase 1 needs only these three)
@@ -138,6 +138,25 @@ package body No_Build is
 
    function C_Rmdir (Path : System.Address) return Integer;
    pragma Import (C, C_Rmdir, "rmdir");
+
+   --------------------------------------------------------------------------
+   --  Directory primitives, declared here because the compile layer reads
+   --  a build's object directory with them and Ada 83 wants every basic
+   --  declaration ahead of the first body.
+   --------------------------------------------------------------------------
+
+   function Open_Dir_Or_Panic (Path : String) return System.Address;
+
+   procedure Next_Dir_Entry
+     (Dir        : System.Address;
+      Name_Buf   : out String;
+      Name_Last  : out Natural;
+      Entry_Type : out Integer);
+
+   function Entry_Kind (Full_Path : String; Entry_Type : Integer)
+     return File_Kind;
+
+   procedure Close_Dir (Handle : System.Address);
 
    --------------------------------------------------------------------------
    --  Internal helpers
@@ -515,75 +534,21 @@ package body No_Build is
    end Base_Name;
 
    --------------------------------------------------------------------------
-   --  Compiler descriptors
+   --  The compiler
    --------------------------------------------------------------------------
 
-   function Gnatmake_Compiler return Ada_Compiler is
-      PIC    : Argument_List;
-      Shared : Argument_List;
-      Probe  : Runtime_Probe_Kind := Gnat_Runtime_Probe;
+   procedure Set_Compiler (Path : String) is
    begin
-      if Platform /= Windows then
-         Append (PIC, "-fPIC");
-      end if;
-      if Platform = MacOS then
-         --  "-undefined dynamic_lookup" defers runtime resolution to load
-         --  time, so libgnat need not be embedded (and the probe's
-         --  gcc -print-libgcc-file-name is unreliable on Alire toolchains).
-         Shared := Args ("-dynamiclib", "-undefined", "dynamic_lookup");
-         Probe  := No_Probe;
-      else
-         Append (Shared, "-shared");
-      end if;
-      return
-        (Executable            => new String'("gnatmake"),
-         Compile_Flags         => Args ("-gnat83"),
-         PIC_Flags             => PIC,
-         Obj_Flag              => new String'("-D"),
-         Out_Flag              => new String'("-o"),
-         Compile_Only_Flag     => new String'("-c"),
-         Shared_Linker         => new String'("gcc"),
-         Shared_Flags          => Shared,
-         Shared_Out_Flag       => new String'("-o"),
-         Shared_Runtime_Probe  => Probe,
-         Static_Archiver       => new String'("ar"),
-         Static_Archiver_Flags => Args ("rcs"),
-         Source_Spec_Ext       => new String'(".ads"),
-         Source_Body_Ext       => new String'(".adb"),
-         Object_Ext            => new String'(".o"),
-         Resolve_Source        => Gnat_Spec_To_Body);
-   end Gnatmake_Compiler;
-
-   function Ada83_Compiler return Ada_Compiler is
-   begin
-      --  ada83 emits one .ll per source with --ir and links .ll modules
-      --  with the main source in one step; there is no separate object
-      --  directory notion, so Obj_Flag is null and Build_*_Lib collects
-      --  .ll files.
-      return
-        (Executable            => new String'("ada83"),
-         Compile_Flags         => No_Args,
-         PIC_Flags             => No_Args,
-         Obj_Flag              => null,
-         Out_Flag              => new String'("-o"),
-         Compile_Only_Flag     => new String'("--ir"),
-         Shared_Linker         => new String'("cc"),
-         Shared_Flags          => Args ("-shared"),
-         Shared_Out_Flag       => new String'("-o"),
-         Shared_Runtime_Probe  => No_Probe,
-         Static_Archiver       => new String'("ar"),
-         Static_Archiver_Flags => Args ("rcs"),
-         Source_Spec_Ext       => new String'(".ads"),
-         Source_Body_Ext       => new String'(".adb"),
-         Object_Ext            => new String'(".ll"),
-         Resolve_Source        => No_Resolver);
-   end Ada83_Compiler;
-
-   procedure Set_Compiler (C : Ada_Compiler) is
-   begin
-      Active_Compiler     := C;
-      Active_Compiler_Set := True;
+      Compiler_Path := new String'(Path);
    end Set_Compiler;
+
+   function Compiler return String is
+   begin
+      if Compiler_Path = null then
+         return "ada83";
+      end if;
+      return Compiler_Path.all;
+   end Compiler;
 
    --------------------------------------------------------------------------
    --  Process execution (POSIX)
@@ -807,46 +772,40 @@ package body No_Build is
       return Positive (Count);
    end N_Procs;
 
-   function Find_Gnat_Runtime return String is
-   begin
-      Unimplemented ("Find_Gnat_Runtime");
-      return "";
-   end Find_Gnat_Runtime;
-
    procedure Compile_Program
      (Source  : String;
       Output  : String        := "";
-      Obj_Dir : String        := "";
+      Modules : Argument_List := No_Args;
       Extra   : Argument_List := No_Args) is
+      Line : Argument_List;
    begin
-      Unimplemented ("Compile_Program");
+      Append (Line, Extra);
+      Append (Line, Source);
+      Append (Line, Modules);
+      if Output /= "" then
+         Append (Line, "-o");
+         Append (Line, Output);
+      end if;
+      Cmd (Compiler, Line);
+      Clear (Line);
    end Compile_Program;
 
-   procedure Compile
-     (Source  : String;
-      Obj_Dir : String        := "";
-      Extra   : Argument_List := No_Args) is
+   procedure Compile_Module
+     (Source : String;
+      Output : String        := "";
+      Extra  : Argument_List := No_Args) is
+      Line : Argument_List;
    begin
-      Unimplemented ("Compile");
-   end Compile;
-
-   procedure Build_Static_Lib
-     (Source  : String;
-      Output  : String;
-      Obj_Dir : String;
-      Extra   : Argument_List := No_Args) is
-   begin
-      Unimplemented ("Build_Static_Lib");
-   end Build_Static_Lib;
-
-   procedure Build_Shared_Lib
-     (Source  : String;
-      Output  : String;
-      Obj_Dir : String;
-      Extra   : Argument_List := No_Args) is
-   begin
-      Unimplemented ("Build_Shared_Lib");
-   end Build_Shared_Lib;
+      Append (Line, "--ir");
+      Append (Line, Extra);
+      Append (Line, Source);
+      if Output /= "" then
+         Append (Line, "-o");
+         Append (Line, Output);
+      end if;
+      Cmd (Compiler, Line);
+      Clear (Line);
+   end Compile_Module;
 
    function Path_Exists (Path : String) return Boolean is
    begin
@@ -1327,13 +1286,87 @@ package body No_Build is
          null;
    end Walk_Dir;
 
+   --  Bin is Binary_Path with the platform's executable suffix: on Windows
+   --  the compiler adds .exe, so the timestamp, the backup and the re-exec
+   --  all have to name the file that actually exists.
+   procedure Rebuild_And_Reexec
+     (Bin         : String;
+      Binary_Path : String;
+      Source_Path : String;
+      Extra       : Argument_List) is
+
+      Old_Binary : constant String := Bin & ".old";
+
+      procedure Discard_Old_Binary is
+      begin
+         if Path_Exists (Old_Binary) then
+            Remove_Path (Old_Binary);
+         end if;
+      exception
+         when others =>
+            null;
+      end Discard_Old_Binary;
+
+   begin
+      --  Sweep up an .old left by a previous run: on Windows the running
+      --  executable owns its file until exec, so that rebuild could not
+      --  delete it.
+      Discard_Old_Binary;
+
+      if not Is_Newer (Source_Path, Bin) then
+         return;
+      end if;
+
+      Info ("build script changed, rebuilding: " & Source_Path);
+      if Path_Exists (Bin) then
+         Rename_Path (Bin, Old_Binary);
+      end if;
+
+      begin
+         Compile_Program (Source_Path, Binary_Path, No_Args, Extra);
+      exception
+         when others =>
+            if Path_Exists (Old_Binary) then
+               Rename_Path (Old_Binary, Bin);
+            end if;
+            raise;
+      end;
+
+      Discard_Old_Binary;
+
+      declare
+         Forwarded : Argument_List;
+         Pid       : Integer;
+         Status    : Integer := 0;
+         Ignored   : Integer;
+      begin
+         for I in 1 .. Command_Line.Argument_Count loop
+            Append (Forwarded, Command_Line.Argument (I));
+         end loop;
+         Info ("re-executing: " & Bin);
+         Pid     := Spawn (Bin, Forwarded, No_Redirect);
+         Ignored := C_Waitpid (Pid, Status'Address, 0);
+         Clear (Forwarded);
+      end;
+
+      --  Leave this, the superseded process; the rebuilt one has run.
+      C_Exit_Process (0);
+   end Rebuild_And_Reexec;
+
    procedure Go_Rebuild_Urself
      (Binary_Path : String;
       Source_Path : String;
-      Obj_Dir     : String        := "";
       Extra       : Argument_List := No_Args) is
    begin
-      Unimplemented ("Go_Rebuild_Urself");
+      if not Path_Exists (Source_Path) then
+         return;
+      end if;
+      if Platform = Windows and then not Ends_With (Binary_Path, ".exe") then
+         Rebuild_And_Reexec (Binary_Path & ".exe", Binary_Path,
+                             Source_Path, Extra);
+      else
+         Rebuild_And_Reexec (Binary_Path, Binary_Path, Source_Path, Extra);
+      end if;
    end Go_Rebuild_Urself;
 
 end No_Build;
