@@ -8,86 +8,150 @@ the patch bumps on behavior-preserving fixes.
 The library version is also surfaced as the `No_Build.Version` constant
 in `no_build.ads`.
 
-## Unreleased
+## 0.1.0-ada83 — 2026-08-04
 
-### Fixed
+A rewrite of the library for [Ada83](https://github.com/AdaDoom3/Ada83),
+a single-file Ada 83 compiler with an LLVM back end. The target is
+MIL-STD-1815A alone, so nothing from Ada 95 or later is available: no
+`Ada.Strings.Unbounded`, no `Ada.Containers`, no `Ada.Directories`, no
+`Ada.Command_Line`, no access-to-subprogram types, no controlled types,
+no child units. Everything the build system needs from the operating
+system is bound directly with `pragma Import`.
 
-- Child-side stdout/stderr redirection now calls `creat(2)` instead of
-  `open(2)`.  `open` is variadic, and on arm64 Darwin variadic arguments
-  are passed on the stack, so calling it through a fixed-arity access
-  type handed the kernel a garbage creation mode: redirect targets (and
-  therefore `Capture`'s temp file) could be created unreadable, making
-  `Capture` fail with `cannot read file:` on Apple Silicon.  `creat` is
-  non-variadic and means exactly `O_WRONLY | O_CREAT | O_TRUNC`, so the
-  per-platform flag literals are gone as well.
-
-## 0.1.0 — 2026-05-19
-
-First tagged release.
-
-### Added
-
-- `No_Build.Version` constant in `no_build.ads`.
-- `Log_Level` enum (`Verbose | Normal | Quiet | Silent`) and
-  `Set_Log_Level` procedure so callers can mute per-command
-  `[CMD]` / `[MKDIR]` / ... noise without writing a custom
-  `Log_Handler`.  Default level remains `Verbose`.
-- `Ada_Compiler` gained `Source_Spec_Ext`, `Source_Body_Ext`,
-  `Object_Ext`, and a `Resolve_Source` access function so toolchain
-  conventions (file extensions, source-path quirks) live on the
-  descriptor instead of being hardcoded.  The default
-  `Gnatmake_Compiler` wires `Resolve_Source` to a body-local helper
-  that swaps a `.ads` for a sibling `.adb` -- working around
-  `gnatmake -c`'s refusal to compile a bare spec next to a body.
+This is not source-compatible with the 0.1.0 line. A build script
+written against that version needs the changes listed under *Changed*
+and *Removed* below.
 
 ### Changed
 
-- `Build_Static_Lib` and `Build_Shared_Lib` now take a single `Source`
-  (path to a root `.ads` or `.adb`) instead of a `Src_Dir`, mirroring
-  `Compile_Program`.  The compiler compiles Source plus its
-  `with`-closure; spec-only packages are no longer silently skipped,
-  and hierarchical packages are included only when reachable from the
-  root unit's `with`-closure.
-- `Obj_Dir` is now the *parent* directory; each Build_*_Lib call
-  carves its own subdir (`<stem>_static` or `<stem>_pic`, derived
-  from `Output`'s basename) so executable and library builds can
-  share an `Obj_Dir` without cross-contamination.  The library
-  archives or links every object file (extension from
-  `Active_Compiler.Object_Ext`) found in that subdir.
-- `Wait` (on a `Proc` returned by `Cmd_Async`) now embeds the exit
-  status in the `Build_Error` message, matching `Cmd` / `Check_Exit`.
-- `Capture` writes its temporary stdout file under `$TMPDIR` (POSIX) /
-  `%TEMP%` / `%TMP%` (Windows) when those are set, falling back to the
-  previous CWD-local path otherwise. Builds in a read-only working
-  directory no longer fail at `Capture`.
-- `Find_Gnat_Runtime` raises a diagnostic `Build_Error` that includes
-  the underlying `Capture` failure message instead of swallowing it,
-  so "gcc missing" and "gcc exited non-zero" don't look identical.
-- The default `Gnatmake_Compiler` descriptor sets
-  `Shared_Runtime_Probe` to null on macOS, since the macOS shared
-  link uses `-undefined dynamic_lookup` and resolves the GNAT
-  runtime at load time -- no need to embed libgnat into the .dylib,
-  and the Alire toolchain on macOS doesn't reliably ship a `gcc`
-  symlink suitable for `-print-libgcc-file-name`.
-- `waitpid` loops in `Posix_Spawn` / `Posix_Wait` now tolerate signal
-  interruption: a `-1` return retries up to a bounded number of times
-  rather than treating EINTR as a hard failure.
-- Magic POSIX literals and conditionals (`Pid < 0`, `Pid = 0`,
-  `FD < 0`, raw `mod 128` / `/ 256` exit-status bit twiddling,
-  `RTLD_LAZY = 1`, `O_WRONLY` / `O_CREAT` / `O_TRUNC` literals,
-  stdout/stderr fd numbers, child exec-failure exit codes) have been
-  replaced with named constants (`POSIX_STDOUT_FD`,
-  `POSIX_DEFAULT_FILE_MODE`, `Child_Exit_Exec_Failed`, ...) and
-  predicates (`Fork_Failed`, `In_Child_Process`, `Syscall_Failed`) so
-  the call sites read like prose.
+- `For_Each_File` and `Walk_Dir` are generics taking a formal
+  subprogram, since Ada 83 has no access-to-subprogram types.
+  Instantiate, then call the instance:
 
-### Documentation
+  ```ada
+  procedure Show_All is new For_Each_File (Show);
+  ...
+  Show_All ("src", ".adb");
+  ```
 
-- `Build_Static_Lib` doc now states that the archive contains object
-  files only (no Ada binder artifact) and is intended for re-link by
-  a downstream Ada toolchain, not direct consumption by a non-Ada
-  linker.
-- `tests/build_tests` reports assertion-level pass/fail totals in
-  addition to the program-level tally.
-- README typos fixed and the Windows-support paragraph rewritten;
-  GNAT minimum and per-platform CI toolchains stated explicitly.
+- `Argument_List` is a plain private type over a growable array of
+  string accesses. Without controlled types there is no deep copy on
+  assignment and no free on scope exit: assignment shares storage, `Copy`
+  makes an independent list, and `Clear` releases one. Build scripts are
+  short-lived processes, so leaving a list unfreed is harmless.
+
+- `Build_Error` carries no message. Ada 83 exceptions have no associated
+  string, so every raiser logs through `Erro` first and the text lands on
+  stderr rather than in the exception.
+
+- `Platform` is a function rather than a constant. A constant in the spec
+  cannot call the body's detection function during elaboration; the
+  result is computed on first call and cached. The probe no longer uses
+  `Ada.Environment_Variables` — it looks for `C:\Windows` and
+  `/usr/bin/sw_vers` through `access(2)`.
+
+- `Compile_Program` takes a `Modules` list instead of an `Obj_Dir`, and
+  speaks ada83's command line directly: one Ada source plus any number of
+  `.ll` modules compiled earlier, and `-o` for the output.
+
+- `Go_Rebuild_Urself` loses its `Obj_Dir` parameter, which no longer
+  means anything, and forwards the original argv through ada83's
+  `Command_Line` vendor package.
+
+- `Str`, an access-to-String with `+` as its allocator, replaces the `US`
+  subtype and its `Ada.Strings.Unbounded` renaming.
+
+- The default log handler writes `[TAG] msg` to stderr through `fputs`,
+  since Ada 83 `Text_IO` has no `Standard_Error`.
+
+### Added
+
+- `Compile_Module`, which compiles one source to textual LLVM IR
+  (`ada83 --ir`) — the form `Compile_Program` links through `Modules`.
+
+- `Copy` and `Clear` on `Argument_List`, to do explicitly what
+  finalization used to do implicitly.
+
+- `Value (S : Str) return String`, mapping null to `""`.
+
+### Removed
+
+- The `Ada_Compiler` descriptor and everything shaped around it:
+  `Gnatmake_Compiler`, `ObjectAda_Compiler`, `Janus_Compiler`,
+  `Set_Compiler`, `Runtime_Probe_Kind`, `Source_Resolver_Kind` and
+  `Find_Gnat_Runtime`. There is one compiler, `ada83`, taken from PATH.
+
+- `Build_Static_Lib` and `Build_Shared_Lib`. ada83 emits executables and
+  `.ll` modules and has no object-file or archive stage, so there is
+  nothing for `ar` or `gcc -shared` to work on. A library here is an
+  `.ll` module that dependent programs link alongside their own source.
+
+- `Set_Log_Handler` and the `Log_Handler` access type. `Set_Log_Level`
+  remains.
+
+- The `windows/` directory. Its `dlopen`/`dlsym` shim existed so the
+  Ada 95 edition could resolve syscalls through function pointers, which
+  Ada 83 cannot express. See *Known limitations*.
+
+### Fixed
+
+- `"/"` no longer doubles a separator the left operand already ends with:
+  `"foo/" / "bar"` gives `"foo/bar"`, not `"foo//bar"`.
+
+### Known limitations
+
+- Windows is unsupported. The OS layer binds POSIX entry points directly
+  (`fork`, `execvp`, `waitpid`, `stat`, `opendir`/`readdir_r`), so Linux
+  and macOS work; Windows needs a second set of bindings
+  (`CreateProcessA`, `FindFirstFileA`, …) selected as subunits.
+
+### Compiler bugs found and fixed upstream
+
+Porting the library surfaced four defects in ada83, each fixed in that
+repository with ACATS holding at 3561/3561:
+
+- A generic instantiated in another compilation unit emitted calls to
+  package-body-local subprograms — and to `pragma Import` subprograms —
+  without declaring them, so the IR did not parse. This blocks any
+  generic whose body uses a private helper, which the directory iterators
+  do.
+
+- A slice took its extent from the prefix's type rather than its own
+  range, so `Buf (1 .. Last)` of a `String (1 .. 32)` yielded 32
+  characters when used to initialise an object or as an attribute prefix.
+  Silent: the object held the right first character and a tail of
+  whatever followed it in the array.
+
+- A file whose first unit was a library subprogram body sharing the
+  file's name compiled that subprogram twice when a later unit in the
+  same file withed it, leaving one definition referring to locals it
+  never declared.
+
+- A name written without an actual parameter part resolved to whichever
+  overload the package exported first, so the parameterless
+  `Text_IO.End_Of_File` was rejected for want of a `File` argument.
+
+Two further departures from bare MIL-STD-1815A were added to ada83 for
+this port: library subprograms carry a GNAT-style `_ada_` symbol prefix,
+so a `procedure Main` cannot collide with the C entry point, and a
+`Command_Line` vendor package exposes `argc`/`argv`.
+
+### Testing
+
+`tests/` holds one self-reporting program per phase of the port —
+`test_phase1` through `test_phase4` — covering the core types and path
+utilities, the process and filesystem layer, directory iteration, and the
+compile layer. `tests/build_tests.adb` runs them, judging each on whether
+it printed `PASSED` rather than on exit status alone. The examples under
+`examples/` are built and run by `examples/build_all.adb`; both harnesses
+are themselves No_Build programs, bootstrapped by `bootstrap_tests.sh`
+and `bootstrap.sh`.
+
+---
+
+The releases below predate this port and describe the Ada 95 line, whose
+history is preserved in git.
+
+## 0.1.0 — 2026-05-19
+
+First tagged release, targeting Ada 2012 and GNAT.

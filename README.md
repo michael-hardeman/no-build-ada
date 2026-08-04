@@ -176,9 +176,8 @@ subunits at build time.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md), which records the Ada 95 line; this
-branch is not yet released. The library version is exposed as
-`No_Build.Version` in `no_build.ads`.
+See [CHANGELOG.md](CHANGELOG.md). The library version is exposed as
+`No_Build.Version` in `no_build.ads`, currently `0.1.0-ada83`.
 
 ## Inspiration
 
