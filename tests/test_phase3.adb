@@ -32,6 +32,7 @@ procedure Test_Phase3 is
    end Check;
 
    procedure Count_Any (File_Name : String) is
+      pragma Unreferenced (File_Name);
    begin
       Seen_Total := Seen_Total + 1;
    end Count_Any;
@@ -81,6 +82,7 @@ procedure Test_Phase3 is
    end Skip_Inner;
 
    function Stop_Early (E : Walk_Entry) return Walk_Action is
+      pragma Unreferenced (E);
    begin
       Stop_Count := Stop_Count + 1;
       return Walk_Stop;

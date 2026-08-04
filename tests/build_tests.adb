@@ -19,7 +19,12 @@ procedure Build_Tests is
 
    Root : constant String := "tests";
    Lib  : constant String := "no_build.ll";
-   Out_File : constant String := "tests" / "last_run.txt";
+
+   --  Several suites exercise failure paths on purpose, so a passing run
+   --  still writes [ERRO] lines and compiler diagnostics.  Both streams
+   --  are captured and shown only when a test actually fails.
+   Out_File : constant String := "tests" / "last_run.out";
+   Err_File : constant String := "tests" / "last_run.err";
 
    Passed : Natural := 0;
    Failed : Natural := 0;
@@ -34,7 +39,7 @@ procedure Build_Tests is
       Compile_Program (Root / Test, Bin, Args (Lib), Args ("-I."));
 
       begin
-         Cmd (Bin, No_Args, To_File (Out_File));
+         Cmd (Bin, No_Args, To_File (Out_File, Err_File));
       exception
          when Build_Error =>
             null;   --  the report below decides; a crash shows up there
@@ -59,6 +64,13 @@ procedure Build_Tests is
             if Report'Length > 0 then
                Text_IO.Put (Report);
             end if;
+            declare
+               Errors : constant String := Read_File (Err_File);
+            begin
+               if Errors'Length > 0 then
+                  Text_IO.Put (Errors);
+               end if;
+            end;
          end if;
       end;
    end Run_One;
@@ -78,6 +90,9 @@ begin
 
    if Path_Exists (Out_File) then
       Remove_Path (Out_File);
+   end if;
+   if Path_Exists (Err_File) then
+      Remove_Path (Err_File);
    end if;
 
    Text_IO.Put_Line ("");

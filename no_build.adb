@@ -176,6 +176,17 @@ package body No_Build is
    function To_Dirent_Bytes is
      new Unchecked_Conversion (System.Address, Dirent_Bytes_Ptr);
 
+   --  Ada 83 has no way to discard a function result, and a variable that
+   --  only ever receives one draws a warning.  Passing the result here is
+   --  what makes "this result is deliberately unused" say so.  The one
+   --  pragma sits at the definition of that idea rather than at each of
+   --  its uses; a compiler that does not know the pragma ignores it.
+   procedure Ignore (X : Integer) is
+      pragma Unreferenced (X);
+   begin
+      null;
+   end Ignore;
+
    function Null_Addr return System.Address is
    begin
       return To_Address_Value (0);
@@ -204,9 +215,8 @@ package body No_Build is
 
    procedure Put_Stderr (Line : String) is
       Buffer  : constant String := Line & ASCII.LF & ASCII.NUL;
-      Ignored : Integer;
    begin
-      Ignored := C_Fputs (Buffer'Address, C_Stderr);
+      Ignore (C_Fputs (Buffer'Address, C_Stderr));
    end Put_Stderr;
 
    --------------------------------------------------------------------------
@@ -554,15 +564,14 @@ package body No_Build is
    procedure Redirect_Child_Fd (Path : String; Fd : Integer) is
       C_Path  : constant String := Path & ASCII.NUL;
       File_Fd : Integer;
-      Ignored : Integer;
    begin
       File_Fd := C_Open (C_Path'Address, Open_Write_Create_Truncate,
                          Mode_644);
       if File_Fd < 0 then
          C_Exit_Process (126);
       end if;
-      Ignored := C_Dup2 (File_Fd, Fd);
-      Ignored := C_Close (File_Fd);
+      Ignore (C_Dup2 (File_Fd, Fd));
+      Ignore (C_Close (File_Fd));
    end Redirect_Child_Fd;
 
    function Spawn
@@ -573,7 +582,6 @@ package body No_Build is
       Argv    : Address_Array (1 .. Argc + 2);
       Holders : Str_Array (1 .. Argc + 1);
       Pid     : Integer;
-      Ignored : Integer;
    begin
       Holders (1) := C_Str (Program);
       Argv (1)    := Data_Address (Holders (1));
@@ -591,7 +599,7 @@ package body No_Build is
          if Redir.Stderr /= null then
             Redirect_Child_Fd (Redir.Stderr.all, 2);
          end if;
-         Ignored := C_Execvp (Argv (1), Argv'Address);
+         Ignore (C_Execvp (Argv (1), Argv'Address));
          C_Exit_Process (127);
       elsif Pid < 0 then
          Panic ("fork failed for " & Program);
@@ -642,7 +650,6 @@ package body No_Build is
       Redir    : Redirect      := No_Redirect) is
       Pid     : Integer;
       Status  : Integer := 0;
-      Ignored : Integer;
    begin
       if Length (Args) = 0 then
          Log ("CMD", Program);
@@ -650,7 +657,7 @@ package body No_Build is
          Log ("CMD", Program & " " & Join_From (Args, 1));
       end if;
       Pid     := Spawn (Program, Args, Redir);
-      Ignored := C_Waitpid (Pid, Status'Address, 0);
+      Ignore (C_Waitpid (Pid, Status'Address, 0));
       Check_Child_Status (Status, Program);
    end Cmd;
 
@@ -669,19 +676,18 @@ package body No_Build is
       Temp_Path : constant String :=
         "/tmp/no_build_capture_" & Pid_Image (2 .. Pid_Image'Last) & ".txt";
       C_Temp    : constant String := Temp_Path & ASCII.NUL;
-      Ignored   : Integer;
    begin
       begin
          Cmd (Program, Args, To_File (Stdout => Temp_Path));
       exception
          when Build_Error =>
-            Ignored := C_Unlink (C_Temp'Address);
+            Ignore (C_Unlink (C_Temp'Address));
             raise;
       end;
       declare
          Raw : constant String := Read_File (Temp_Path);
       begin
-         Ignored := C_Unlink (C_Temp'Address);
+         Ignore (C_Unlink (C_Temp'Address));
          return Trim_Whitespace (Raw);
       end;
    end Capture;
@@ -703,12 +709,11 @@ package body No_Build is
 
    procedure Wait (P : Proc) is
       Status  : Integer := 0;
-      Ignored : Integer;
    begin
       if P.Pid <= 0 then
          Panic ("Wait: invalid process handle");
       end if;
-      Ignored := C_Waitpid (P.Pid, Status'Address, 0);
+      Ignore (C_Waitpid (P.Pid, Status'Address, 0));
       Check_Child_Status (Status, "pid" & Integer'Image (P.Pid));
    end Wait;
 
@@ -821,9 +826,8 @@ package body No_Build is
    end Is_Dir;
 
    procedure Close_Dir (Handle : System.Address) is
-      Ignored : Integer;
    begin
-      Ignored := C_Closedir (Handle);
+      Ignore (C_Closedir (Handle));
    end Close_Dir;
 
    function Open_Dir_Or_Panic (Path : String) return System.Address is
@@ -905,7 +909,6 @@ package body No_Build is
    end Make_Dir;
 
    procedure Make_Dirs (Path : String) is
-      Ignored : Integer;
    begin
       Log ("MKDIRS", Path);
       for I in Path'Range loop
@@ -915,7 +918,7 @@ package body No_Build is
                C_Prefix : constant String := Prefix & ASCII.NUL;
             begin
                if not Path_Exists (Prefix) then
-                  Ignored := C_Mkdir (C_Prefix'Address, Mode_755);
+                  Ignore (C_Mkdir (C_Prefix'Address, Mode_755));
                end if;
             end;
          end if;
@@ -946,7 +949,6 @@ package body No_Build is
       Name_Buf  : String (1 .. 256);
       Name_Last : Natural;
       Kind_Code : Integer;
-      Ignored   : Integer;
    begin
       Handle := Open_Dir_Or_Panic (Path);
       loop
@@ -965,7 +967,7 @@ package body No_Build is
                      declare
                         C_Full : constant String := Full & ASCII.NUL;
                      begin
-                        Ignored := C_Unlink (C_Full'Address);
+                        Ignore (C_Unlink (C_Full'Address));
                      end;
                   end if;
                end;
@@ -1004,7 +1006,6 @@ package body No_Build is
       Write_Mode : constant String := "wb" & ASCII.NUL;
       Source     : System.Address;
       Target     : System.Address;
-      Ignored    : Integer;
    begin
       Log ("CP", Src & " -> " & Dst);
       Source := C_Fopen (C_Src'Address, Read_Mode'Address);
@@ -1013,7 +1014,7 @@ package body No_Build is
       end if;
       Target := C_Fopen (C_Dst'Address, Write_Mode'Address);
       if Is_Null (Target) then
-         Ignored := C_Fclose (Source);
+         Ignore (C_Fclose (Source));
          Panic ("Copy_File: cannot create " & Dst);
       end if;
       declare
@@ -1027,13 +1028,13 @@ package body No_Build is
             exit when Got <= 0;
             Put := C_Fwrite (Buffer'Address, 1, Got, Target);
             if Put /= Got then
-               Ignored := C_Fclose (Source);
-               Ignored := C_Fclose (Target);
+               Ignore (C_Fclose (Source));
+               Ignore (C_Fclose (Target));
                Panic ("Copy_File: short write to " & Dst);
             end if;
          end loop;
       end;
-      Ignored := C_Fclose (Source);
+      Ignore (C_Fclose (Source));
       if C_Fclose (Target) /= 0 then
          Panic ("Copy_File: close failed for " & Dst);
       end if;
@@ -1044,7 +1045,6 @@ package body No_Build is
       Name_Buf  : String (1 .. 256);
       Name_Last : Natural;
       Kind_Code : Integer;
-      Ignored   : Integer;
    begin
       Make_Dirs (Dst);
       Handle := Open_Dir_Or_Panic (Src);
@@ -1085,21 +1085,20 @@ package body No_Build is
       Read_Mode : constant String := "rb" & ASCII.NUL;
       Stream    : System.Address;
       Size      : Long;
-      Ignored   : Integer;
    begin
       Stream := C_Fopen (C_Path'Address, Read_Mode'Address);
       if Is_Null (Stream) then
          Panic ("Read_File: cannot open " & Path);
       end if;
-      Ignored := C_Fseek (Stream, 0, Seek_End);
+      Ignore (C_Fseek (Stream, 0, Seek_End));
       Size    := C_Ftell (Stream);
-      Ignored := C_Fseek (Stream, 0, Seek_Set);
+      Ignore (C_Fseek (Stream, 0, Seek_Set));
       declare
          Result : String (1 .. Integer (Size));
          Got    : Long;
       begin
          Got := C_Fread (Result'Address, 1, Size, Stream);
-         Ignored := C_Fclose (Stream);
+         Ignore (C_Fclose (Stream));
          if Got /= Size then
             Panic ("Read_File: short read from " & Path);
          end if;
@@ -1324,14 +1323,13 @@ package body No_Build is
          Forwarded : Argument_List;
          Pid       : Integer;
          Status    : Integer := 0;
-         Ignored   : Integer;
       begin
          for I in 1 .. Command_Line.Argument_Count loop
             Append (Forwarded, Command_Line.Argument (I));
          end loop;
          Info ("re-executing: " & Bin);
          Pid     := Spawn (Bin, Forwarded, No_Redirect);
-         Ignored := C_Waitpid (Pid, Status'Address, 0);
+         Ignore (C_Waitpid (Pid, Status'Address, 0));
          Clear (Forwarded);
       end;
 

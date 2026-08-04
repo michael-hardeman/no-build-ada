@@ -20,3 +20,4 @@ examples/str_demo
 examples/tools/cat
 examples/tools/hex
 examples/tools/rot13
+tests/last_run.*
