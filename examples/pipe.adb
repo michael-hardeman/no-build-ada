@@ -2,23 +2,25 @@
 --
 --  Sh is a thin wrapper over the platform shell, so command syntax is
 --  not portable -- see the gotcha list on No_Build.Sh.  Here we branch
---  on Platform: a POSIX pipeline on Linux/macOS and a cmd.exe pipeline
---  on Windows.  Both pipe a short greeting through rot13 then hex; we
---  then cat the file via No_Build.Cmd and clean up.
+--  on System.TARGET_OS: a POSIX pipeline on Linux/macOS and a cmd.exe
+--  pipeline on Windows.  The condition is static, so only the arm for
+--  the target being compiled for can be reached.  Both pipe a short
+--  greeting through rot13 then hex; we then cat the file via
+--  No_Build.Cmd and clean up.
 
+with System;
 with No_Build;
 
 procedure Pipe is
    use No_Build;
 begin
-   case Platform is
-      when Linux | MacOS =>
-         Sh ("echo 'Hello, World!' | examples/tools/rot13"
-             & " | examples/tools/hex > output.txt");
-      when Windows =>
-         Sh ("echo Hello, World | examples\tools\rot13"
-             & " | examples\tools\hex > output.txt");
-   end case;
+   if System.Target_OS = System.Windows then
+      Sh ("echo Hello, World | examples\tools\rot13"
+          & " | examples\tools\hex > output.txt");
+   else
+      Sh ("echo 'Hello, World!' | examples/tools/rot13"
+          & " | examples/tools/hex > output.txt");
+   end if;
    Cmd ("examples/tools/cat", Args ("output.txt"));
    Remove_Path ("output.txt");
 end Pipe;

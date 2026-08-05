@@ -16,7 +16,8 @@ MIL-STD-1815A alone, so nothing from Ada 95 or later is available: no
 `Ada.Strings.Unbounded`, no `Ada.Containers`, no `Ada.Directories`, no
 `Ada.Command_Line`, no access-to-subprogram types, no controlled types,
 no child units. Everything the build system needs from the operating
-system is bound directly with `pragma Import`.
+system is bound directly with `pragma Import`, in one body that serves
+every target.
 
 This is not source-compatible with the 0.1.0 line. A build script
 written against that version needs the changes listed under *Changed*
@@ -44,10 +45,10 @@ and *Removed* below.
   string, so every raiser logs through `Erro` first and the text lands on
   stderr rather than in the exception.
 
-- `Platform` is a function rather than a constant, since a constant in
-  the spec cannot call the body's function during elaboration. Nothing
-  is probed at run time: the bootstrap already had to name a system to
-  pick a body, and each body answers with its own.
+- `Platform` and `Platform_Kind` are gone. `System.Target_OS` names the
+  system the program was compiled for, the comparison against it is
+  static, and a build script that needs to branch uses it directly --
+  see `examples/pipe.adb`.
 
 - `Compile_Program` takes a `Modules` list instead of an `Obj_Dir`, and
   speaks ada83's command line directly: one Ada source plus any number of
@@ -56,10 +57,9 @@ and *Removed* below.
 - `Go_Rebuild_Urself` loses its `Obj_Dir` parameter, which no longer
   means anything, and forwards the original argv through ada83's
   `Command_Line` vendor package. It also carries the host forward: the
-  rebuild links `no_build.ll` and `platform_support.ll` where bootstrap
-  left them and adds the include path of the `Platform_Support` body this
-  program was built from, so a platform is named once, at bootstrap, and
-  never again.
+  rebuild links `no_build.ll` where the bootstrap left it. There is
+  nothing else to carry: one body serves every target, so no platform is
+  ever named.
 
 - `Str`, an access-to-String with `+` as its allocator, replaces the `US`
   subtype and its `Ada.Strings.Unbounded` renaming.
@@ -71,12 +71,6 @@ and *Removed* below.
 
 - `Compile_Module`, which compiles one source to textual LLVM IR
   (`ada83 --ir`) — the form `Compile_Program` links through `Modules`.
-
-- `Platform_Dir`, the directory holding the `Platform_Support` body this
-  program was built from (`linux`, `macos-arm64`, `macos-x86_64` or
-  `windows`). A build script that recompiles the platform module names
-  its source through this rather than repeating the choice the bootstrap
-  made.
 
 - `Copy` and `Clear` on `Argument_List`, to do explicitly what
   finalization used to do implicitly.
@@ -100,41 +94,51 @@ and *Removed* below.
 
 - The `dlopen`/`dlsym` shim the Ada 95 edition used to resolve syscalls
   through function pointers, which Ada 83 cannot express. Every system
-  call is now a direct `pragma Import` in a per-system body.
+  call is now a direct `pragma Import` in `no_build.adb`.
+
+- The `Platform_Support` package, its spec and its four bodies. The
+  library is two files: `no_build.ads` and `no_build.adb`.
 
 ### Fixed
 
 - `"/"` no longer doubles a separator the left operand already ends with:
   `"foo/" / "bar"` gives `"foo/bar"`, not `"foo//bar"`.
 
+- Two Ada 83 errors in the Windows system calls, found the moment they
+  were first compiled: three constants of the directory-search block were
+  declared after subprogram bodies, which a declarative part does not
+  allow, and `Read_Dir` read its own `out` parameter to derive
+  `Is_File`.
+
 ### Platforms
 
-- Every system call goes through a new `Platform_Support` package, whose
-  body is chosen at bootstrap, one directory per system: `linux/`,
-  `macos-arm64/`, `macos-x86_64/` or `windows/`. Nothing above it names
-  a syscall, a struct offset or an errno-style constant.
+- Every system call is in `no_build.adb`, and every system is compiled
+  into every build. Which entry points exist is decided per import by
+  the `Enabled` argument ada83 accepts on `pragma Import`: a symbol this
+  target does not have is left unimported, so nothing demands it of the
+  linker, and every call to it sits behind a static condition on
+  `System.Target_OS`. On a Linux build the binary's undefined symbols
+  are `fork`, `execvp`, `opendir`, `readdir_r`, `stat` and `waitpid`,
+  and not one Win32 name.
 
-- There is no shared POSIX body. Linux and macOS agree on most of the
-  text but disagree about the layout of `struct stat` and `struct
-  dirent`, about the values of `O_CREAT` and `O_TRUNC`, and about the
-  `sysconf` selector for the processor count, so each body states its
-  own answers rather than branching on a system it was already chosen
-  for.
+- There is no `Platform_Support` package and no per-system directory.
+  The Windows path is compiled and type-checked on Linux and the macOS
+  path on both, so no body can rot for want of anything building it —
+  which is how two Ada 83 errors in the Windows code went unnoticed
+  until now; see *Fixed*.
 
-- macOS has one body per architecture. Intel carries two of each of
-  `stat`, `opendir` and `readdir_r` — a pre-64-bit-inode one under the
-  plain name, and the modern one suffixed `$INODE64` — and the C headers
-  rename the plain names onto the suffixed symbols. `pragma Import`
-  writes the name it is given, so `macos-x86_64/` spells the suffix out;
-  binding the plain name would read `st_mode` and the timestamps from
-  the wrong offsets. Apple silicon exports only the modern calls, under
-  the plain names.
+- What Linux and macOS disagree about — `struct stat` and `struct
+  dirent` offsets, `O_CREAT` and `O_TRUNC`, the `sysconf` selector for
+  the processor count — are static `if`s in the one body. The `$INODE64`
+  suffix Intel macOS puts on `stat`, `opendir` and `readdir_r` is a
+  static slice folded into the external name, so one text covers both
+  macOS architectures.
 
 ### Known limitations
 
 - Tested on Linux only. The macOS numbers come from the documented ABIs
-  and the Windows body has never been run; treat all three as
-  unverified.
+  and the Windows path has never been run; treat both as unverified.
+  They are, however, compiled and type-checked on every build now.
 
 
 ### Compiler bugs found and fixed upstream

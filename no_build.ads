@@ -14,8 +14,8 @@
 --      ada83 compiler only, so Compile_Program and Compile_Module speak
 --      its command line directly.  ada83 has no object-file or archive
 --      stage, so Build_Static_Lib and Build_Shared_Lib are gone too.
---    * Platform is a function, not a constant (a spec constant cannot
---      call its own body's function during elaboration in Ada 83).
+--    * There is no Platform enquiry: System.TARGET_OS says which system
+--      this was compiled for, and the comparison is static.
 
 with System;
 
@@ -27,22 +27,6 @@ package No_Build is
 
    Build_Error : exception;
    --  Raised when any build step fails (non-zero exit code or OS error).
-
-   --------------------------------------------------------------------------
-   --  Platform
-   --------------------------------------------------------------------------
-
-   type Platform_Kind is (Linux, MacOS, Windows);
-
-   function Platform return Platform_Kind;
-   --  Detected once on first call, then cached.  WINDIR is Windows-only;
-   --  /usr/bin/sw_vers ships on macOS only.
-
-   function Platform_Dir return String;
-   --  The directory holding the Platform_Support body this program was
-   --  built from: "linux", "macos-arm64", "macos-x86_64" or "windows".
-   --  A build script recompiles the platform module through this, rather
-   --  than repeating the choice the bootstrap made.
 
    --------------------------------------------------------------------------
    --  Str -- a heap string, with "+" as the allocator shorthand.  Storage
@@ -126,8 +110,8 @@ package No_Build is
    --  about almost everything (pipes, sequencing, variables, quoting,
    --  globbing, PATH separators, slashes).  For portable command
    --  execution prefer Cmd, which spawns directly with no shell in the
-   --  loop.  If you need pipes or redirection, branch on Platform and
-   --  emit two Sh calls -- see examples/pipe.adb.
+   --  loop.  If you need pipes or redirection, branch on
+   --  System.TARGET_OS and emit two Sh calls -- see examples/pipe.adb.
 
    function Capture
      (Program  : String;
@@ -313,11 +297,9 @@ package No_Build is
    --  procedure.  If Source_Path is newer than Binary_Path, recompiles
    --  and re-execs, forwarding the original argv (via Command_Line).
    --
-   --  The rebuild carries the host forward on its own: it links
-   --  no_build.ll and platform_support.ll where bootstrap left them, and
-   --  adds the include path of the Platform_Support body this program was
-   --  built from.  A platform is named once, at bootstrap, and never
-   --  again -- Extra is for your own flags.
+   --  The rebuild links no_build.ll where the bootstrap left it. There
+   --  is nothing else to carry: one body of this library serves every
+   --  target, so no platform is ever named.  Extra is for your own flags.
    --------------------------------------------------------------------------
 
    procedure Go_Rebuild_Urself

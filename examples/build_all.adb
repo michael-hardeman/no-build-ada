@@ -18,7 +18,6 @@ procedure Build_All is
    Library  : constant String := "no_build.ll";
    Greet_LL : constant String := "examples/lib/greet.ll";
 
-   Platform_Module : constant String := "platform_support.ll";
 
    procedure Build_Tool (Tool : String) is
    begin
@@ -35,7 +34,6 @@ procedure Build_All is
          return;
       end if;
       Append (Modules, Library);
-      Append (Modules, Platform_Module);
       if Example = "lib_demo.adb" then
          Append (Modules, Greet_LL);
       end if;
@@ -51,14 +49,6 @@ procedure Build_All is
 begin
    Go_Rebuild_Urself ("./examples/build_all", "examples/build_all.adb",
                       Args ("-I."));
-
-   --  Rebuild the platform module before the library that sits on it, so
-   --  an edit to this host's Platform_Support body reaches the examples
-   --  without a second bootstrap.  Platform_Dir is the directory the
-   --  bootstrap chose; nothing here repeats that choice.
-   Info ("building the platform module...");
-   Compile_Module (Platform_Dir / "platform_support.adb", Platform_Module,
-                   Args ("-I."));
 
    Info ("building the library...");
    Compile_Module ("no_build.adb", Library, Args ("-I."));

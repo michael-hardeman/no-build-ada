@@ -8,8 +8,8 @@ This branch targets [Ada83](https://github.com/AdaDoom3/Ada83), a single-file
 Ada 83 compiler with an LLVM back end. It is MIL-STD-1815A only: no
 `Ada.Strings.Unbounded`, no `Ada.Containers`, no `Ada.Directories`, no
 access-to-subprogram types, no controlled types. Everything the build system
-needs from the operating system is bound directly with `pragma Import`,
-behind one package with a body per platform.
+needs from the operating system is bound directly with `pragma Import`, in
+one body that serves every platform.
 
 ## Concept
 
@@ -18,10 +18,9 @@ once, and from then on `./build` recompiles itself whenever `build.ada`
 changes, before doing anything else (*Go Rebuild Urself* pattern).
 
 ```sh
-ada83 --ir -I. linux/platform_support.adb -o platform_support.ll  # one-time
-ada83 --ir -I. no_build.adb -o no_build.ll
-ada83 -I. build.ada no_build.ll platform_support.ll -o build
-./build                                                          # forever after
+ada83 --ir -I. no_build.adb -o no_build.ll   # one-time
+ada83 -I. build.ada no_build.ll -o build
+./build                                      # forever after
 ```
 
 ## Usage
@@ -31,9 +30,9 @@ Copy these into your project root alongside your build program:
 | File | Purpose |
 |---|---|
 | `no_build.ads` | Package spec (API) |
-| `no_build.adb` | Package body (implementation) |
-| `platform_support.ads` | The operating system, as No_Build needs it |
-| one of `linux/`, `macos-arm64/`, `macos-x86_64/`, `windows/` | One body for that spec; see [Platforms](#platforms) |
+| `no_build.adb` | Package body (implementation, including every system call) |
+
+Two files. There is nothing to choose and nothing else to copy.
 
 ## Quick start
 
@@ -49,10 +48,9 @@ begin
 end Build;
 ```
 
-`Go_Rebuild_Urself` links `no_build.ll` and `platform_support.ll` where
-the bootstrap left them, and adds the include path of the
-`Platform_Support` body that bootstrap chose. A platform is named once,
-at bootstrap, and never again.
+`Go_Rebuild_Urself` links `no_build.ll` where the bootstrap left it.
+There is nothing else to carry: one body serves every target, so no
+platform is ever named.
 
 ## Compiling
 
@@ -119,7 +117,7 @@ Show_All ("src", ".adb");
 | `Build_Error` carries a message | Ada 83 exceptions carry none; every raiser logs through `Erro` first |
 | `Set_Log_Handler` | gone; `Set_Log_Level` remains |
 | `Ada_Compiler` descriptor, `Build_Static_Lib`, `Build_Shared_Lib` | gone; ada83 is the only compiler and has no archive stage |
-| `Platform` is a constant | a function |
+| `Platform` is a constant | gone; `System.Target_OS` says which system, and the comparison is static |
 
 ## API reference
 
@@ -162,15 +160,15 @@ one `FAILED` line per broken check:
 | `test_dependencies` | `Is_Newer`, `Needs_Rebuild` |
 | `test_compiling` | `Compile_Module`, `Compile_Program` |
 | `test_rebuilding` | `Go_Rebuild_Urself`, including a real rebuild and re-exec |
-| `test_platform` | the per-system body: `stat` fields, `dirent` fields, `O_CREAT`/`O_TRUNC`, shell and separator conventions |
+| `test_platform` | the system calls: `stat` fields, `dirent` fields, `O_CREAT`/`O_TRUNC`, the shell |
 
 `test_platform` is the one that reads a field and knows what must be in
-it. A body with a wrong struct offset raises nothing — `stat` still
-returns 0 and the value simply comes out of the wrong bytes — so it
-checks that a directory reports as a directory, that an mtime lands
-after 2001, and that directory entry names come back intact. Adding a
-suite means dropping a `test_*.adb` in `tests/`; the runner lists none
-of them by name.
+it. A wrong struct offset raises nothing — `stat` still returns 0 and the
+value simply comes out of the wrong bytes — so it checks that a directory
+reports as a directory, that a file written now beats one stamped in
+2001, and that directory entry names come back intact. Adding a suite
+means dropping a `test_*.adb` in `tests/`; the runner lists none of them
+by name.
 
 `tests/build_tests.adb` is the runner, itself a No_Build program:
 
@@ -184,59 +182,46 @@ sh bootstrap_tests.sh    # one-time
 - [Ada83](https://github.com/AdaDoom3/Ada83) on PATH as `ada83`, including
   its `Command_Line` vendor package, which `Go_Rebuild_Urself` uses to
   forward the original argv.
-- A POSIX C library on Linux and macOS, or Win32 on Windows. Which one
-  is reached is decided by the `Platform_Support` body the bootstrap
-  compiles; see below.
+- A POSIX C library on Linux and macOS, or Win32 on Windows. Which one is
+  reached is decided by the compiler, from `System.Target_OS`; see below.
 
 ## Platforms
 
-Every system call goes through `Platform_Support`, whose spec is one file
-and whose body is one per system:
-
-| Body | Covers |
-|---|---|
-| `linux/platform_support.adb` | Linux, any architecture |
-| `macos-arm64/platform_support.adb` | macOS on Apple silicon |
-| `macos-x86_64/platform_support.adb` | macOS on Intel |
-| `windows/platform_support.adb` | Windows |
-
-Nothing above that package names a syscall, a struct offset or an
-errno-style constant, so porting to another system means writing one more
-body and changing nothing else. The bootstrap scripts pick a body from
-`uname -s` and `uname -m`; point them elsewhere to cross-compile.
-
-That choice is made once. `Platform_Dir` reports the directory the
-bootstrap picked, so a build script recompiles the platform module
-without naming a platform of its own:
+Every system call is in `no_build.adb`, and every system is compiled into
+every build. Which entry points exist is decided per import:
 
 ```ada
-Compile_Module (Platform_Dir / "platform_support.adb",
-                "platform_support.ll", Args ("-I."));
+function C_Fork return Integer;
+pragma Import (C, C_Fork, "fork",
+               Enabled => System.Target_OS /= System.Windows);
+
+function W_CreateProcessA (...) return Integer;
+pragma Import (Stdcall, W_CreateProcessA, "CreateProcessA",
+               Enabled => System.Target_OS = System.Windows);
 ```
 
-`examples/build_all.adb` and `tests/build_tests.adb` both do this, ahead
-of the library that sits on it, so editing a body reaches everything
-built from it on the next run.
+A symbol this target does not have is left unimported, so nothing demands
+it of the linker, and every call to it sits behind a static condition on
+`System.Target_OS` that cannot be taken here. On a Linux build the
+binary's undefined symbols are `fork`, `execvp`, `opendir`, `readdir_r`,
+`stat` and `waitpid` — and not one Win32 name.
 
-There is no shared POSIX body. Linux and macOS agree on most of the text
-but disagree about the layout of `struct stat` and `struct dirent`, about
-the values of `O_CREAT` and `O_TRUNC`, and about the `sysconf` selector
-for the processor count — so each body states its own answers rather than
-branching on a system it was already chosen for.
+What that buys over one body per system: the Windows path is compiled and
+type-checked on Linux, and the macOS path on both. Nothing can rot in a
+body nobody builds. The three constants that Linux and macOS disagree
+about — `struct stat` offsets, `struct dirent` offsets, `O_CREAT`/
+`O_TRUNC`, the `sysconf` selector — are static `if`s in the one body, and
+the `$INODE64` suffix Intel macOS puts on `stat`, `opendir` and
+`readdir_r` is a static slice folded into the external name.
 
-macOS needs one body per architecture because Intel carries two of each
-of `stat`, `opendir` and `readdir_r`: a pre-64-bit-inode one under the
-plain name, and the modern one suffixed `$INODE64`. The C headers rename
-the plain names onto the suffixed symbols, but `pragma Import` writes the
-name it is given, so `macos-x86_64/` spells the suffix out. Binding the
-plain name there would silently read `st_mode` and the timestamps from
-the wrong offsets. Apple silicon postdates that split and exports only
-the modern calls, under the plain names.
+Porting to another system means adding imports and conditions to that one
+file. There is no directory to pick and no module to build.
 
 **Tested on Linux only.** The macOS constants and offsets are taken from
-the documented ABIs, and the Windows body is written against the Win32
-ABI and has never been run. All three should be treated as unverified
-until they have been.
+the documented ABIs, and the Windows path is written against the Win32
+ABI and has never been run. Both should be treated as unverified until
+they have been — though both now compile on every build, which is more
+than was true when each lived in a file nothing selected.
 
 ## Changelog
 
