@@ -1,5 +1,9 @@
 --  build_tests.adb -- build and run every test_*.adb in tests/.
 --
+--  One program per feature of the library, named for it.  Adding a
+--  suite means dropping a test_*.adb in this directory; nothing here
+--  lists them.
+--
 --  Bootstrap (one time only):
 --    sh bootstrap_tests.sh
 --    ./tests/build_tests

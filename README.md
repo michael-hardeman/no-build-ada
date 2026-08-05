@@ -147,15 +147,30 @@ sh bootstrap.sh          # or bootstrap.cmd on Windows
 
 ## Tests
 
-`tests/` holds one program per phase of the port, each self-reporting
-`PASSED` or one `FAILED` line per broken check:
+`tests/` holds one program per feature, each self-reporting `PASSED` or
+one `FAILED` line per broken check:
 
 | Program | Covers |
 |---|---|
-| `test_phase1` | `Argument_List`, path utilities, `Str`, logging, the platform probe |
-| `test_phase2` | processes, redirection, filesystem, cwd, `Is_Newer`/`Needs_Rebuild` |
-| `test_phase3` | `For_Each_File`, `Walk_Dir`, `Copy_Dir`, `Remove_Path` |
-| `test_phase4` | `Compile_Module`, `Compile_Program`, `Go_Rebuild_Urself` |
+| `test_arguments` | `Argument_List`, `Copy`, `Clear`, `Str` |
+| `test_paths` | `/`, `Base_Name`, `No_Ext`, `Ends_With` |
+| `test_logging` | `Set_Log_Level`, `Info`/`Warn`/`Erro`, `Panic` |
+| `test_commands` | `Cmd`, `Sh`, `Capture`, output redirection |
+| `test_processes` | `Cmd_Async`, `Wait`, `Wait_All`, `N_Procs` |
+| `test_files` | `Read_File`/`Write_File`, `Copy_File`, `Make_Dir(s)`, cwd |
+| `test_directories` | `For_Each_File`, `Walk_Dir`, `Copy_Dir`, `Remove_Path` |
+| `test_dependencies` | `Is_Newer`, `Needs_Rebuild` |
+| `test_compiling` | `Compile_Module`, `Compile_Program` |
+| `test_rebuilding` | `Go_Rebuild_Urself`, including a real rebuild and re-exec |
+| `test_platform` | the per-system body: `stat` fields, `dirent` fields, `O_CREAT`/`O_TRUNC`, shell and separator conventions |
+
+`test_platform` is the one that reads a field and knows what must be in
+it. A body with a wrong struct offset raises nothing — `stat` still
+returns 0 and the value simply comes out of the wrong bytes — so it
+checks that a directory reports as a directory, that an mtime lands
+after 2001, and that directory entry names come back intact. Adding a
+suite means dropping a `test_*.adb` in `tests/`; the runner lists none
+of them by name.
 
 `tests/build_tests.adb` is the runner, itself a No_Build program:
 

@@ -186,14 +186,31 @@ so a `procedure Main` cannot collide with the C entry point, and a
 
 ### Testing
 
-`tests/` holds one self-reporting program per phase of the port —
-`test_phase1` through `test_phase4` — covering the core types and path
-utilities, the process and filesystem layer, directory iteration, and the
-compile layer. `tests/build_tests.adb` runs them, judging each on whether
-it printed `PASSED` rather than on exit status alone. The examples under
-`examples/` are built and run by `examples/build_all.adb`; both harnesses
-are themselves No_Build programs, bootstrapped by `bootstrap_tests.sh`
-and `bootstrap.sh`.
+`tests/` holds one self-reporting program per feature, named for it:
+`test_arguments`, `test_paths`, `test_logging`, `test_commands`,
+`test_processes`, `test_files`, `test_directories`,
+`test_dependencies`, `test_compiling`, `test_rebuilding` and
+`test_platform`. `tests/build_tests.adb` runs whatever `test_*.adb` it
+finds, judging each on whether it printed `PASSED` rather than on exit
+status alone.
+
+`test_platform` is new with the per-system split. A body with a wrong
+struct offset raises nothing — `stat` still returns 0 and the value
+comes out of the wrong bytes — so it reads fields whose contents are
+known: a directory must report as a directory, an mtime must land after
+2001, directory entry names must come back intact, and a redirect must
+create and truncate. Flipping the Linux `st_mtime` word to the macOS
+one, or the Linux `d_type` byte to the macOS one, fails it in both
+cases and names the field.
+
+`test_rebuilding` covers the real `Go_Rebuild_Urself` path, which was
+previously untested: it builds a second No_Build program, makes its
+source newer than its binary, and checks the marker only the newer
+source writes.
+
+The examples under `examples/` are built and run by
+`examples/build_all.adb`; both harnesses are themselves No_Build
+programs, bootstrapped by `bootstrap_tests.sh` and `bootstrap.sh`.
 
 ---
 
