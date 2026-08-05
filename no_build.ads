@@ -40,9 +40,9 @@ package No_Build is
 
    function Platform_Dir return String;
    --  The directory holding the Platform_Support body this program was
-   --  built from: "posix" on Linux and macOS, "windows" on Windows.  A
-   --  build script that recompiles the platform module names its source
-   --  through this, rather than repeating the choice bootstrap made.
+   --  built from: "linux", "macos-arm64", "macos-x86_64" or "windows".
+   --  A build script recompiles the platform module through this, rather
+   --  than repeating the choice the bootstrap made.
 
    --------------------------------------------------------------------------
    --  Str -- a heap string, with "+" as the allocator shorthand.  Storage

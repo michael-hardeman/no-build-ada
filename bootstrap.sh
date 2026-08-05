@@ -3,14 +3,21 @@
 # One-time bootstrap of the examples build script.  From then on run
 # ./examples/build_all -- it rebuilds itself whenever its source changes.
 #
-# Platform_Support has one body per family; pick the one for this system.
+# Platform_Support has one body per system; pick this machine's.  Nothing
+# after this asks again: the built program reports the directory back
+# through No_Build.Platform_Dir.
 
 set -e
 
 case "$(uname -s)" in
-    Darwin|Linux) PLATFORM=posix   ;;
+    Darwin)
+        case "$(uname -m)" in
+            arm64|aarch64) PLATFORM=macos-arm64   ;;
+            *)             PLATFORM=macos-x86_64  ;;
+        esac
+        ;;
     MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;
-    *)            PLATFORM=posix   ;;
+    *)                    PLATFORM=linux   ;;
 esac
 
 ada83 --ir -I. "$PLATFORM/platform_support.adb" -o platform_support.ll

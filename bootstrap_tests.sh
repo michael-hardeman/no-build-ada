@@ -3,14 +3,19 @@
 # One-time bootstrap of the test runner.  From then on run
 # ./tests/build_tests -- it rebuilds itself whenever its source changes.
 #
-# Platform_Support has one body per family; pick the one for this system.
+# Platform_Support has one body per system; pick this machine's.
 
 set -e
 
 case "$(uname -s)" in
-    Darwin|Linux) PLATFORM=posix   ;;
+    Darwin)
+        case "$(uname -m)" in
+            arm64|aarch64) PLATFORM=macos-arm64   ;;
+            *)             PLATFORM=macos-x86_64  ;;
+        esac
+        ;;
     MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;
-    *)            PLATFORM=posix   ;;
+    *)                    PLATFORM=linux   ;;
 esac
 
 ada83 --ir -I. "$PLATFORM/platform_support.adb" -o platform_support.ll

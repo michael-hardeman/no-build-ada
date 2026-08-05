@@ -1,14 +1,20 @@
 --  platform_support.ads -- the operating system, as No_Build needs it.
 --
---  One spec, one body per family:
+--  One spec, one body per system:
 --
---     posix/platform_support.adb     Linux and macOS
---     windows/platform_support.adb   Windows
+--     linux/platform_support.adb          Linux, any architecture
+--     macos-arm64/platform_support.adb    macOS on Apple silicon
+--     macos-x86_64/platform_support.adb   macOS on Intel
+--     windows/platform_support.adb        Windows
 --
---  Pick a body at bootstrap by compiling that directory's file; see
+--  Pick one at bootstrap by compiling that directory's file; see
 --  bootstrap.sh and bootstrap.cmd.  Nothing above this package knows a
 --  struct layout, an errno-style constant or a syscall name, so porting
 --  to another system means writing one more body and nothing else.
+--
+--  The bodies do not share a POSIX layer: Linux and macOS agree on most
+--  of the text but disagree on enough of the arithmetic -- and, on Intel
+--  macOS, on the symbol names -- that each states its own answers.
 --
 --  Operations that can fail report it in their result rather than
 --  raising: No_Build owns the diagnostics and the Build_Error.
@@ -23,7 +29,16 @@ package Platform_Support is
    type Host_Kind is (Linux, MacOS, Windows);
 
    function Host return Host_Kind;
-   --  Detected once, then cached.
+   --  Settled when the body was chosen, not probed at run time.
+
+   function Body_Dir return String;
+   --  The directory this package's body was compiled from, relative to
+   --  the project root: "linux", "macos-arm64", "macos-x86_64" or
+   --  "windows".
+   --
+   --  This is the whole of what the bootstrap had to decide, carried in
+   --  the program built from it: a build script recompiles this package
+   --  without being told a system again.
 
    function Path_Separator return Character;
    function Shell_Program  return String;   --  "/bin/sh" or "cmd.exe"

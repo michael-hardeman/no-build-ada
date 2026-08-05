@@ -40,8 +40,14 @@ procedure Build_Tests is
          return;
       end if;
 
-      Compile_Program (Root / Test, Bin, Args (Lib, Platform_Module),
-                       Args ("-I."));
+      declare
+         Modules : Argument_List;
+      begin
+         Append (Modules, Lib);
+         Append (Modules, Platform_Module);
+         Compile_Program (Root / Test, Bin, Modules, Args ("-I."));
+         Clear (Modules);
+      end;
 
       begin
          Cmd (Bin, No_Args, To_File (Out_File, Err_File));

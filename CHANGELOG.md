@@ -44,11 +44,10 @@ and *Removed* below.
   string, so every raiser logs through `Erro` first and the text lands on
   stderr rather than in the exception.
 
-- `Platform` is a function rather than a constant. A constant in the spec
-  cannot call the body's detection function during elaboration; the
-  result is computed on first call and cached. The probe no longer uses
-  `Ada.Environment_Variables` — it looks for `C:\Windows` and
-  `/usr/bin/sw_vers` through `access(2)`.
+- `Platform` is a function rather than a constant, since a constant in
+  the spec cannot call the body's function during elaboration. Nothing
+  is probed at run time: the bootstrap already had to name a system to
+  pick a body, and each body answers with its own.
 
 - `Compile_Program` takes a `Modules` list instead of an `Obj_Dir`, and
   speaks ada83's command line directly: one Ada source plus any number of
@@ -74,9 +73,10 @@ and *Removed* below.
   (`ada83 --ir`) — the form `Compile_Program` links through `Modules`.
 
 - `Platform_Dir`, the directory holding the `Platform_Support` body this
-  program was built from (`posix` or `windows`). A build script that
-  recompiles the platform module names its source through this rather
-  than repeating the choice the bootstrap made.
+  program was built from (`linux`, `macos-arm64`, `macos-x86_64` or
+  `windows`). A build script that recompiles the platform module names
+  its source through this rather than repeating the choice the bootstrap
+  made.
 
 - `Copy` and `Clear` on `Argument_List`, to do explicitly what
   finalization used to do implicitly.
@@ -98,9 +98,9 @@ and *Removed* below.
 - `Set_Log_Handler` and the `Log_Handler` access type. `Set_Log_Level`
   remains.
 
-- The `windows/` directory. Its `dlopen`/`dlsym` shim existed so the
-  Ada 95 edition could resolve syscalls through function pointers, which
-  Ada 83 cannot express. See *Known limitations*.
+- The `dlopen`/`dlsym` shim the Ada 95 edition used to resolve syscalls
+  through function pointers, which Ada 83 cannot express. Every system
+  call is now a direct `pragma Import` in a per-system body.
 
 ### Fixed
 
@@ -110,27 +110,36 @@ and *Removed* below.
 ### Platforms
 
 - Every system call goes through a new `Platform_Support` package, whose
-  body is chosen at bootstrap: `posix/` for Linux and macOS, `windows/`
-  for Windows. Nothing above it names a syscall, a struct offset or an
-  errno-style constant.
+  body is chosen at bootstrap, one directory per system: `linux/`,
+  `macos-arm64/`, `macos-x86_64/` or `windows/`. Nothing above it names
+  a syscall, a struct offset or an errno-style constant.
 
-- Being POSIX is not enough to share a body blindly. Linux and macOS
-  disagree about the layout of `struct stat` and `struct dirent`, about
-  the values of `O_CREAT` and `O_TRUNC`, and about the `sysconf`
-  selector for the processor count; the POSIX body answers each from
-  `Host`.
+- There is no shared POSIX body. Linux and macOS agree on most of the
+  text but disagree about the layout of `struct stat` and `struct
+  dirent`, about the values of `O_CREAT` and `O_TRUNC`, and about the
+  `sysconf` selector for the processor count, so each body states its
+  own answers rather than branching on a system it was already chosen
+  for.
+
+- macOS has one body per architecture. Intel carries two of each of
+  `stat`, `opendir` and `readdir_r` — a pre-64-bit-inode one under the
+  plain name, and the modern one suffixed `$INODE64` — and the C headers
+  rename the plain names onto the suffixed symbols. `pragma Import`
+  writes the name it is given, so `macos-x86_64/` spells the suffix out;
+  binding the plain name would read `st_mode` and the timestamps from
+  the wrong offsets. Apple silicon exports only the modern calls, under
+  the plain names.
 
 ### Known limitations
 
 - Tested on Linux only. The macOS numbers come from the documented ABIs
-  and the Windows body has never been run; treat both as unverified.
+  and the Windows body has never been run; treat all three as
+  unverified.
 
-- On x86_64 macOS the C library exports `stat` as `stat$INODE64`. The
-  POSIX body imports the plain name, correct on arm64 macOS and Linux.
 
 ### Compiler bugs found and fixed upstream
 
-Porting the library surfaced five defects in ada83, each fixed in that
+Porting the library surfaced seven defects in ada83, each fixed in that
 repository with ACATS holding at 3561/3561:
 
 - A generic instantiated in another compilation unit emitted calls to
@@ -158,6 +167,17 @@ repository with ACATS holding at 3561/3561:
   comes from context, so `+"literal"` was rejected where
   `+String'("literal")` compiled. Binary operators already allowed for
   it; the unary case did not.
+
+- A subunit compiled on its own resolved its proper body at global scope
+  whenever the parent already had an `.ali` or `.ll` beside it, so the
+  body was mangled as a library subprogram while the parent called the
+  stub's qualified name, and the link failed. The parent's declarative
+  region was not visible to it either.
+
+- A library-level array, record or string object lost its initializer:
+  the global was emitted zero-filled and nothing was deferred to
+  elaboration, so `Tag : String (1 .. 5) := "linux";` in a package body
+  elaborated to five NUL bytes.
 
 Two further departures from bare MIL-STD-1815A were added to ada83 for
 this port: library subprograms carry a GNAT-style `_ada_` symbol prefix,

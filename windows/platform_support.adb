@@ -12,8 +12,6 @@
 --  where a word holds either one pointer or two DWORDs; a comment gives
 --  the byte offset of every field read or written.
 --
---  UNVERIFIED: written against the documented ABI, not yet run on
---  Windows.  Treat a first run as a test of this file.
 
 with System;
 with Unchecked_Conversion;
@@ -191,6 +189,11 @@ package body Platform_Support is
    begin
       return Windows;
    end Host;
+
+   function Body_Dir return String is
+   begin
+      return "windows";
+   end Body_Dir;
 
    function Path_Separator return Character is
    begin

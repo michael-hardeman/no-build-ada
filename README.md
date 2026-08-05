@@ -18,7 +18,7 @@ once, and from then on `./build` recompiles itself whenever `build.ada`
 changes, before doing anything else (*Go Rebuild Urself* pattern).
 
 ```sh
-ada83 --ir -I. posix/platform_support.adb -o platform_support.ll  # one-time
+ada83 --ir -I. linux/platform_support.adb -o platform_support.ll  # one-time
 ada83 --ir -I. no_build.adb -o no_build.ll
 ada83 -I. build.ada no_build.ll platform_support.ll -o build
 ./build                                                          # forever after
@@ -33,7 +33,7 @@ Copy these into your project root alongside your build program:
 | `no_build.ads` | Package spec (API) |
 | `no_build.adb` | Package body (implementation) |
 | `platform_support.ads` | The operating system, as No_Build needs it |
-| `posix/` or `windows/` | One body for that spec; see [Platforms](#platforms) |
+| one of `linux/`, `macos-arm64/`, `macos-x86_64/`, `windows/` | One body for that spec; see [Platforms](#platforms) |
 
 ## Quick start
 
@@ -176,17 +176,19 @@ sh bootstrap_tests.sh    # one-time
 ## Platforms
 
 Every system call goes through `Platform_Support`, whose spec is one file
-and whose body is one per family:
+and whose body is one per system:
 
 | Body | Covers |
 |---|---|
-| `posix/platform_support.adb` | Linux and macOS |
+| `linux/platform_support.adb` | Linux, any architecture |
+| `macos-arm64/platform_support.adb` | macOS on Apple silicon |
+| `macos-x86_64/platform_support.adb` | macOS on Intel |
 | `windows/platform_support.adb` | Windows |
 
 Nothing above that package names a syscall, a struct offset or an
 errno-style constant, so porting to another system means writing one more
 body and changing nothing else. The bootstrap scripts pick a body from
-`uname`; point them elsewhere to cross-compile.
+`uname -s` and `uname -m`; point them elsewhere to cross-compile.
 
 That choice is made once. `Platform_Dir` reports the directory the
 bootstrap picked, so a build script recompiles the platform module
@@ -201,20 +203,25 @@ Compile_Module (Platform_Dir / "platform_support.adb",
 of the library that sits on it, so editing a body reaches everything
 built from it on the next run.
 
-Being POSIX is not enough to share a body blindly: Linux and macOS
-disagree about the layout of `struct stat` and `struct dirent`, about the
-values of `O_CREAT` and `O_TRUNC`, and about the `sysconf` selector for
-the processor count. The POSIX body answers each of those from `Host`, in
-one place each.
+There is no shared POSIX body. Linux and macOS agree on most of the text
+but disagree about the layout of `struct stat` and `struct dirent`, about
+the values of `O_CREAT` and `O_TRUNC`, and about the `sysconf` selector
+for the processor count — so each body states its own answers rather than
+branching on a system it was already chosen for.
+
+macOS needs one body per architecture because Intel carries two of each
+of `stat`, `opendir` and `readdir_r`: a pre-64-bit-inode one under the
+plain name, and the modern one suffixed `$INODE64`. The C headers rename
+the plain names onto the suffixed symbols, but `pragma Import` writes the
+name it is given, so `macos-x86_64/` spells the suffix out. Binding the
+plain name there would silently read `st_mode` and the timestamps from
+the wrong offsets. Apple silicon postdates that split and exports only
+the modern calls, under the plain names.
 
 **Tested on Linux only.** The macOS constants and offsets are taken from
 the documented ABIs, and the Windows body is written against the Win32
-ABI and has never been run. Both should be treated as unverified until
-they have been.
-
-One known gap: on x86_64 macOS the C library exports `stat` as
-`stat$INODE64`, and the POSIX body imports the plain name, which is
-correct on arm64 macOS and on Linux.
+ABI and has never been run. All three should be treated as unverified
+until they have been.
 
 ## Changelog
 

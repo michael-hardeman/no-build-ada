@@ -1,8 +1,9 @@
 --  no_build.adb -- Ada 83 port.
 --
 --  Every system call goes through Platform_Support, whose body is chosen
---  at bootstrap: posix/ for Linux and macOS, windows/ for Windows.  No
---  struct layout, syscall name or errno-style constant appears here.
+--  at bootstrap, one directory per system: linux/, macos-arm64/,
+--  macos-x86_64/ or windows/.  No struct layout, syscall name or
+--  errno-style constant appears here.
 
 with Command_Line;
 with Platform_Support;
@@ -192,12 +193,7 @@ package body No_Build is
 
    function Platform_Dir return String is
    begin
-      case Platform is
-         when Linux | MacOS =>
-            return "posix";
-         when Windows =>
-            return "windows";
-      end case;
+      return OS.Body_Dir;
    end Platform_Dir;
 
    --------------------------------------------------------------------------

@@ -1,16 +1,19 @@
---  posix/platform_support.adb -- Linux and macOS.
+--  macos-x86_64/platform_support.adb -- macOS on Intel.
 --
---  Both are POSIX, so the entry points are the same; what differs is
---  arithmetic.  The two systems disagree about the layout of struct stat
---  and struct dirent, about the value of O_CREAT and O_TRUNC, and about
---  the sysconf selector for the processor count.  Every such difference
---  is answered by Host below, in one place each, rather than by a second
---  copy of the code.
+--  One body per system.  Linux and macOS are both POSIX and most of what
+--  follows is the same text in each, but the two disagree about the
+--  layout of struct stat and struct dirent, about the value of O_CREAT
+--  and O_TRUNC, about the sysconf selector for the processor count, and
+--  on x86_64 macOS about the names the C library exports stat, opendir
+--  and readdir_r under.  Each body states its own answers outright rather
+--  than branching on a system it was already chosen for.
 --
---  Known limitation: on x86_64 macOS the C library exports stat as
---  stat$INODE64, and the plain name binds to a variant that predates
---  64-bit inodes.  This body imports "stat", which is correct on arm64
---  macOS and on Linux.
+--  x86_64 carries two of each of these calls: a pre-64-bit-inode one
+--  under the plain name, kept for binaries built before 10.5, and the
+--  modern one under a $INODE64 suffix.  The C headers rename the plain
+--  names onto the suffixed symbols; pragma Import writes the name it is
+--  given, so the suffix has to be written out or the old call answers,
+--  and its struct stat puts st_mode and the timestamps elsewhere.
 
 with System;
 with Unchecked_Conversion;
@@ -24,9 +27,6 @@ package body Platform_Support is
    type Byte_Array_Ptr is access Byte_Array;
 
    Dirent_Words : Word_Array;
-
-   Host_Known : Boolean   := False;
-   Host_Value : Host_Kind := Linux;
 
    Dirent_Type_Unknown   : constant Integer := 0;
    Dirent_Type_Directory : constant Integer := 4;
@@ -76,10 +76,6 @@ package body Platform_Support is
    function C_Sysconf (Name : Integer) return Long;
    pragma Import (C, C_Sysconf, "sysconf");
 
-   function C_Stat (Path : System.Address; Buf : System.Address)
-     return Integer;
-   pragma Import (C, C_Stat, "stat");
-
    function C_Mkdir (Path : System.Address; Mode : Integer) return Integer;
    pragma Import (C, C_Mkdir, "mkdir");
 
@@ -99,19 +95,25 @@ package body Platform_Support is
      return System.Address;
    pragma Import (C, C_Getcwd, "getcwd");
 
-   function C_Opendir (Path : System.Address) return System.Address;
-   pragma Import (C, C_Opendir, "opendir");
-
-   function C_Readdir_R (Dir : System.Address; Entry_Buf : System.Address;
-                         Result : System.Address) return Integer;
-   pragma Import (C, C_Readdir_R, "readdir_r");
-
+   --  closedir takes no struct and is exported under the plain name
+   --  everywhere, so unlike opendir and readdir_r it stays here.
    function C_Closedir (Dir : System.Address) return Integer;
    pragma Import (C, C_Closedir, "closedir");
 
    function To_Long is new Unchecked_Conversion (System.Address, Long);
    function To_Bytes is
      new Unchecked_Conversion (System.Address, Byte_Array_Ptr);
+
+   function C_Stat (Path : System.Address; Buf : System.Address)
+     return Integer;
+   pragma Import (C, C_Stat, "stat$INODE64");
+
+   function C_Opendir (Path : System.Address) return System.Address;
+   pragma Import (C, C_Opendir, "opendir$INODE64");
+
+   function C_Readdir_R (Dir : System.Address; Entry_Buf : System.Address;
+                         Result : System.Address) return Integer;
+   pragma Import (C, C_Readdir_R, "readdir_r$INODE64");
 
    procedure Ignore (X : Integer) is
       pragma Unreferenced (X);
@@ -128,23 +130,54 @@ package body Platform_Support is
    --  Host
    --------------------------------------------------------------------------
 
+   --  Settled when this body was chosen, not probed at run time: the
+   --  bootstrap already had to name a system to pick it.
    function Host return Host_Kind is
    begin
-      if not Host_Known then
-         --  sw_vers ships on macOS and nowhere else.
-         declare
-            Probe : constant String := "/usr/bin/sw_vers" & ASCII.NUL;
-         begin
-            if C_Access (Probe'Address, 0) = 0 then
-               Host_Value := MacOS;
-            else
-               Host_Value := Linux;
-            end if;
-         end;
-         Host_Known := True;
-      end if;
-      return Host_Value;
+      return MacOS;
    end Host;
+
+   function Body_Dir return String is
+   begin
+      return "macos-x86_64";
+   end Body_Dir;
+
+   --------------------------------------------------------------------------
+   --  What this system answers differently from the others
+   --------------------------------------------------------------------------
+
+   --  O_WRONLY 1, O_CREAT 0x200, O_TRUNC 0x400.
+   function Open_Write_Create_Truncate return Integer is
+   begin
+      return 1537;
+   end Open_Write_Create_Truncate;
+
+   --  The sysconf selector for _SC_NPROCESSORS_ONLN.
+   function Sysconf_Cpus return Integer is
+   begin
+      return 58;
+   end Sysconf_Cpus;
+
+   --  A 16-bit st_mode at byte 4, so the high half of word 1 carries
+   --  it with st_dev beneath.
+   function Stat_Mode (Words : Word_Array) return Integer is
+   begin
+      return Integer ((Words (1) / 4294967296) mod 65536);
+   end Stat_Mode;
+
+   --  st_mtimespec.tv_sec at byte 48; the next word is the
+   --  nanoseconds.
+   function Stat_Mtime_Word return Integer is
+   begin
+      return 7;
+   end Stat_Mtime_Word;
+
+   --  d_ino 8, d_seekoff 8, d_reclen 2, d_namlen 2, then d_type at
+   --  byte 21, one-based.  Linux has neither d_seekoff nor d_namlen.
+   function Dirent_Type_Index return Integer is
+   begin
+      return 21;
+   end Dirent_Type_Index;
 
    function Path_Separator return Character is
    begin
@@ -160,59 +193,6 @@ package body Platform_Support is
    begin
       return "-c";
    end Shell_Flag;
-
-   --------------------------------------------------------------------------
-   --  Per-system numbers
-   --------------------------------------------------------------------------
-
-   --  O_WRONLY or O_CREAT or O_TRUNC.  O_CREAT is 0100 on Linux and
-   --  0x200 on macOS; O_TRUNC is 01000 and 0x400.
-   function Open_Write_Create_Truncate return Integer is
-   begin
-      if Host = MacOS then
-         return 1537;
-      end if;
-      return 577;
-   end Open_Write_Create_Truncate;
-
-   --  _SC_NPROCESSORS_ONLN
-   function Sysconf_Cpus return Integer is
-   begin
-      if Host = MacOS then
-         return 58;
-      end if;
-      return 84;
-   end Sysconf_Cpus;
-
-   --  Word holding st_mode, and the width of the field within it.
-   --  Linux: a 32-bit st_mode at byte 24.  macOS: a 16-bit st_mode at
-   --  byte 4, so the low word carries st_dev beneath it.
-   function Stat_Mode (Words : Word_Array) return Integer is
-   begin
-      if Host = MacOS then
-         return Integer ((Words (1) / 4294967296) mod 65536);
-      end if;
-      return Integer ((Words (4) mod 4294967296) mod 65536);
-   end Stat_Mode;
-
-   --  st_mtim(e).tv_sec: byte 88 on Linux, byte 48 on macOS.
-   function Stat_Mtime_Word return Integer is
-   begin
-      if Host = MacOS then
-         return 7;
-      end if;
-      return 12;
-   end Stat_Mtime_Word;
-
-   --  d_type, then the first byte of d_name, one-based.  macOS carries an
-   --  eight-byte d_seekoff that Linux does not.
-   function Dirent_Type_Index return Integer is
-   begin
-      if Host = MacOS then
-         return 21;
-      end if;
-      return 19;
-   end Dirent_Type_Index;
 
    --------------------------------------------------------------------------
    --  Diagnostics
