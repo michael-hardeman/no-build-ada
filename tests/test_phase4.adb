@@ -113,6 +113,55 @@ procedure Test_Phase4 is
       Go_Rebuild_Urself (Root & "/hello", Root & "/absent.ada");
    end Check_Go_Rebuild_Urself;
 
+   --  The rebuild itself cannot be run in this process: it re-execs and
+   --  never returns.  Build a second No_Build program that calls it, make
+   --  its source newer than its binary, and let it rebuild and re-exec
+   --  itself.  The marker the re-executed program writes is the one only
+   --  the second source spells, so reading it back proves the rebuild
+   --  linked -- which it can only do if Go_Rebuild_Urself carried the
+   --  library module and this host's Platform_Support body forward.
+   procedure Write_Self_Builder (Marker : String) is
+   begin
+      Write_File (Root & "/selfbuild.ada",
+        "with No_Build;" & ASCII.LF &
+        "procedure Selfbuild is" & ASCII.LF &
+        "   use No_Build;" & ASCII.LF &
+        "begin" & ASCII.LF &
+        "   Set_Log_Level (Silent);" & ASCII.LF &
+        "   Go_Rebuild_Urself (""" & Root & "/selfbuild"", """ &
+                               Root & "/selfbuild.ada"");" & ASCII.LF &
+        "   Write_File (""" & Root & "/marker"", """ & Marker & """);" &
+                               ASCII.LF &
+        "end Selfbuild;" & ASCII.LF);
+   end Write_Self_Builder;
+
+   procedure Check_Rebuild_Carries_The_Host is
+      Modules : Argument_List;
+   begin
+      Append (Modules, "no_build.ll");
+      if Path_Exists ("platform_support.ll") then
+         Append (Modules, "platform_support.ll");
+      end if;
+
+      Write_Self_Builder ("first");
+      Compile_Program (Root & "/selfbuild.ada", Root & "/selfbuild",
+                       Modules, Args ("-I."));
+      Clear (Modules);
+
+      --  Now the source is newer than the binary just built from it.
+      Write_Self_Builder ("second");
+      Check (Is_Newer (Root & "/selfbuild.ada", Root & "/selfbuild"),
+             "SELFBUILD SOURCE IS NEWER THAN ITS BINARY");
+
+      Cmd (Root & "/selfbuild");
+      Check (Path_Exists (Root & "/marker"),
+             "GO_REBUILD_URSELF RE-EXECS THE REBUILT PROGRAM");
+      if Path_Exists (Root & "/marker") then
+         Check (Read_File (Root & "/marker") = "second",
+                "GO_REBUILD_URSELF REBUILDS FROM THE CURRENT SOURCE");
+      end if;
+   end Check_Rebuild_Carries_The_Host;
+
 begin
    Set_Log_Level (Quiet);
    Sh ("rm -rf " & Root);
@@ -123,6 +172,7 @@ begin
    Check_Failure_Paths;
    Check_Extra_Flags;
    Check_Go_Rebuild_Urself;
+   Check_Rebuild_Carries_The_Host;
 
    Sh ("rm -rf " & Root);
    if not Failed then

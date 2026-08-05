@@ -49,6 +49,11 @@ begin
 end Build;
 ```
 
+`Go_Rebuild_Urself` links `no_build.ll` and `platform_support.ll` where
+the bootstrap left them, and adds the include path of the
+`Platform_Support` body that bootstrap chose. A platform is named once,
+at bootstrap, and never again.
+
 ## Compiling
 
 The compiler is `ada83`, taken from PATH. It builds an executable from one

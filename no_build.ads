@@ -306,6 +306,12 @@ package No_Build is
    --  Go_Rebuild_Urself(TM): call as the first statement in your build
    --  procedure.  If Source_Path is newer than Binary_Path, recompiles
    --  and re-execs, forwarding the original argv (via Command_Line).
+   --
+   --  The rebuild carries the host forward on its own: it links
+   --  no_build.ll and platform_support.ll where bootstrap left them, and
+   --  adds the include path of the Platform_Support body this program was
+   --  built from.  A platform is named once, at bootstrap, and never
+   --  again -- Extra is for your own flags.
    --------------------------------------------------------------------------
 
    procedure Go_Rebuild_Urself

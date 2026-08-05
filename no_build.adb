@@ -190,6 +190,19 @@ package body No_Build is
       return Platform_Value;
    end Platform;
 
+   --  The directory holding the Platform_Support body this program was
+   --  built from.  Bootstrap picks it once; Go_Rebuild_Urself forwards it
+   --  so a rebuild reaches the same body without being told again.
+   function Platform_Dir return String is
+   begin
+      case Platform is
+         when Linux | MacOS =>
+            return "posix";
+         when Windows =>
+            return "windows";
+      end case;
+   end Platform_Dir;
+
    --------------------------------------------------------------------------
    --  Str
    --------------------------------------------------------------------------
@@ -1089,6 +1102,13 @@ package body No_Build is
 
       Old_Binary : constant String := Bin & ".old";
 
+      --  What bootstrap left beside the build script.  ada83 skips
+      --  compiling a unit whose .ll is already on the include path, so
+      --  those modules have to be named on the command line or nothing
+      --  resolves them; where no .ll was left, -I reaches the source.
+      Library_Module  : constant String := "no_build.ll";
+      Platform_Module : constant String := "platform_support.ll";
+
       procedure Discard_Old_Binary is
       begin
          if Path_Exists (Old_Binary) then
@@ -1114,14 +1134,33 @@ package body No_Build is
          Rename_Path (Bin, Old_Binary);
       end if;
 
+      declare
+         Modules : Argument_List;
+         Flags   : Argument_List;
       begin
-         Compile_Program (Source_Path, Binary_Path, No_Args, Extra);
-      exception
-         when others =>
-            if Path_Exists (Old_Binary) then
-               Rename_Path (Old_Binary, Bin);
-            end if;
-            raise;
+         if Path_Exists (Library_Module) then
+            Append (Modules, Library_Module);
+         end if;
+         if Path_Exists (Platform_Module) then
+            Append (Modules, Platform_Module);
+         end if;
+         Append (Flags, Extra);
+         Append (Flags, "-I" & Platform_Dir);
+
+         begin
+            Compile_Program (Source_Path, Binary_Path, Modules, Flags);
+         exception
+            when others =>
+               Clear (Modules);
+               Clear (Flags);
+               if Path_Exists (Old_Binary) then
+                  Rename_Path (Old_Binary, Bin);
+               end if;
+               raise;
+         end;
+
+         Clear (Modules);
+         Clear (Flags);
       end;
 
       Discard_Old_Binary;

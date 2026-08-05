@@ -56,7 +56,11 @@ and *Removed* below.
 
 - `Go_Rebuild_Urself` loses its `Obj_Dir` parameter, which no longer
   means anything, and forwards the original argv through ada83's
-  `Command_Line` vendor package.
+  `Command_Line` vendor package. It also carries the host forward: the
+  rebuild links `no_build.ll` and `platform_support.ll` where bootstrap
+  left them and adds the include path of the `Platform_Support` body this
+  program was built from, so a platform is named once, at bootstrap, and
+  never again.
 
 - `Str`, an access-to-String with `+` as its allocator, replaces the `US`
   subtype and its `Ada.Strings.Unbounded` renaming.
