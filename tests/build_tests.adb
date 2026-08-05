@@ -21,8 +21,8 @@ procedure Build_Tests is
 
    --  The library and the system it sits on, both compiled to modules by
    --  the bootstrap and linked into every test.
-   Lib      : constant String := "no_build.ll";
-   Platform : constant String := "platform_support.ll";
+   Lib             : constant String := "no_build.ll";
+   Platform_Module : constant String := "platform_support.ll";
 
    --  Several suites exercise failure paths on purpose, so a passing run
    --  still writes [ERRO] lines and compiler diagnostics.  Both streams
@@ -40,7 +40,7 @@ procedure Build_Tests is
          return;
       end if;
 
-      Compile_Program (Root / Test, Bin, Args (Lib, Platform),
+      Compile_Program (Root / Test, Bin, Args (Lib, Platform_Module),
                        Args ("-I."));
 
       begin
@@ -87,6 +87,15 @@ begin
                       Args ("-I."));
 
    Set_Log_Level (Normal);
+
+   --  Rebuild the platform module before the library that sits on it, so
+   --  an edit to this host's Platform_Support body reaches the tests
+   --  without a second bootstrap.  Platform_Dir is the directory the
+   --  bootstrap chose; nothing here repeats that choice.
+   Info ("building the platform module...");
+   Compile_Module (Platform_Dir / "platform_support.adb", Platform_Module,
+                   Args ("-I."));
+
    Info ("building the library...");
    Compile_Module ("no_build.adb", Lib, Args ("-I."));
 

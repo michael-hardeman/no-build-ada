@@ -188,6 +188,19 @@ errno-style constant, so porting to another system means writing one more
 body and changing nothing else. The bootstrap scripts pick a body from
 `uname`; point them elsewhere to cross-compile.
 
+That choice is made once. `Platform_Dir` reports the directory the
+bootstrap picked, so a build script recompiles the platform module
+without naming a platform of its own:
+
+```ada
+Compile_Module (Platform_Dir / "platform_support.adb",
+                "platform_support.ll", Args ("-I."));
+```
+
+`examples/build_all.adb` and `tests/build_tests.adb` both do this, ahead
+of the library that sits on it, so editing a body reaches everything
+built from it on the next run.
+
 Being POSIX is not enough to share a body blindly: Linux and macOS
 disagree about the layout of `struct stat` and `struct dirent`, about the
 values of `O_CREAT` and `O_TRUNC`, and about the `sysconf` selector for

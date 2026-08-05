@@ -73,6 +73,11 @@ and *Removed* below.
 - `Compile_Module`, which compiles one source to textual LLVM IR
   (`ada83 --ir`) — the form `Compile_Program` links through `Modules`.
 
+- `Platform_Dir`, the directory holding the `Platform_Support` body this
+  program was built from (`posix` or `windows`). A build script that
+  recompiles the platform module names its source through this rather
+  than repeating the choice the bootstrap made.
+
 - `Copy` and `Clear` on `Argument_List`, to do explicitly what
   finalization used to do implicitly.
 

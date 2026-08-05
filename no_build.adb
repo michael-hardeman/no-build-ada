@@ -190,9 +190,6 @@ package body No_Build is
       return Platform_Value;
    end Platform;
 
-   --  The directory holding the Platform_Support body this program was
-   --  built from.  Bootstrap picks it once; Go_Rebuild_Urself forwards it
-   --  so a rebuild reaches the same body without being told again.
    function Platform_Dir return String is
    begin
       case Platform is

@@ -38,6 +38,12 @@ package No_Build is
    --  Detected once on first call, then cached.  WINDIR is Windows-only;
    --  /usr/bin/sw_vers ships on macOS only.
 
+   function Platform_Dir return String;
+   --  The directory holding the Platform_Support body this program was
+   --  built from: "posix" on Linux and macOS, "windows" on Windows.  A
+   --  build script that recompiles the platform module names its source
+   --  through this, rather than repeating the choice bootstrap made.
+
    --------------------------------------------------------------------------
    --  Str -- a heap string, with "+" as the allocator shorthand.  Storage
    --  lives until process exit.
